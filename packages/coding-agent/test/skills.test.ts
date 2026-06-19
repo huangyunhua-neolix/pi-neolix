@@ -428,5 +428,28 @@ describe("skills", () => {
 			expect(collisionWarnings).toHaveLength(1);
 			expect(collisionWarnings[0].message).toContain("name collision");
 		});
+
+		it("loadSkills silently dedups same-named skills without collision diagnostics", () => {
+			// FEAT-003 followup: same skill mirrored at multiple paths (e.g.
+			// ~/.claude/skills vs plugin cache) must NOT flood the user with
+			// collision diagnostics. First-loaded wins, duplicates are silently
+			// dropped, and no "collision" diagnostic is emitted.
+			const result = loadSkills({
+				cwd: homedir(),
+				agentDir: collisionFixturesDir,
+				skillPaths: [
+					join(collisionFixturesDir, "first"),
+					join(collisionFixturesDir, "second"),
+				],
+				includeDefaults: false,
+			});
+
+			// Only one "calendar" skill (first-loaded wins), no collision diagnostics.
+			expect(result.skills.filter((s) => s.name === "calendar")).toHaveLength(1);
+
+			// No collision diagnostics at all — dedup is silent.
+			const collisions = result.diagnostics.filter((d) => d.type === "collision");
+			expect(collisions).toHaveLength(0);
+		});
 	});
 });
