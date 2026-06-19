@@ -2819,6 +2819,76 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.getText(), "/help ");
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
+
+		it("keeps /skill:<name> in editor (selected, not submitted) when confirmed", async () => {
+			// FEAT-005: /skill:<name> takes a task argument, so selecting it from the
+			// autocomplete menu (Enter) should stay in the editor for the user to
+			// append their input, instead of falling through to submit.
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "skill:brainstorming", description: "Brainstorm an idea" },
+					{ name: "compact", description: "Compact context" },
+				],
+				process.cwd(),
+			);
+			editor.setAutocompleteProvider(provider);
+
+			let submitted = false;
+			editor.onSubmit = () => {
+				submitted = true;
+			};
+
+			// Open the menu by typing the command prefix
+			editor.handleInput("/");
+			editor.handleInput("s");
+			editor.handleInput("k");
+			editor.handleInput("i");
+			editor.handleInput("l");
+			editor.handleInput("l");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			// Confirm the first suggestion with Enter
+			editor.handleInput("\r");
+
+			// Should NOT submit; the command stays in the editor with a trailing space
+			assert.strictEqual(submitted, false);
+			assert.strictEqual(editor.getText(), "/skill:brainstorming ");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("submits built-in /compact immediately when confirmed from menu", async () => {
+			// Built-in immediate commands (no task argument) keep the original
+			// select-and-execute behaviour.
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "skill:brainstorming", description: "Brainstorm an idea" },
+					{ name: "compact", description: "Compact context" },
+				],
+				process.cwd(),
+			);
+			editor.setAutocompleteProvider(provider);
+
+			let submitted = false;
+			editor.onSubmit = () => {
+				submitted = true;
+			};
+
+			// Open the menu and navigate to /compact
+			editor.handleInput("/");
+			editor.handleInput("c");
+			editor.handleInput("o");
+			editor.handleInput("m");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			editor.handleInput("\r");
+
+			// Built-in /-prefixed command still submits immediately
+			assert.strictEqual(submitted, true);
+		});
 	});
 
 	describe("Character jump (Ctrl+])", () => {
