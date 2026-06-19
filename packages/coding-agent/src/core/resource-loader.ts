@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
@@ -59,7 +60,10 @@ function resolvePromptInput(input: string | undefined, description: string): str
 }
 
 function loadContextFileFromDir(dir: string): { path: string; content: string } | null {
-	const candidates = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+	// FEAT-002 (freecode-web adapter): CLAUDE.md is preferred over AGENTS.md to
+	// match freecode CLI's memory loading model, so a project's CLAUDE.md is
+	// honored even when an AGENTS.md sits next to it.
+	const candidates = ["CLAUDE.md", "CLAUDE.MD", "AGENTS.md", "AGENTS.MD"];
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
@@ -90,6 +94,19 @@ export function loadProjectContextFiles(options: {
 	if (globalContext) {
 		contextFiles.push(globalContext);
 		seenPaths.add(globalContext.path);
+	}
+
+	// FEAT-002 (freecode-web adapter): also load the freecode user-level memory
+	// file ~/.claude/CLAUDE.md, so pi shares the same user instructions as
+	// freecode CLI. Loaded before project files (lower priority, like upstream
+	// ordering), and only the CLAUDE.md candidate (not AGENTS.md).
+	const claudeUserDir = resolvePath(join(homedir(), ".claude"));
+	if (claudeUserDir !== resolvedAgentDir) {
+		const claudeUserContext = loadContextFileFromDir(claudeUserDir);
+		if (claudeUserContext && !seenPaths.has(claudeUserContext.path)) {
+			contextFiles.push(claudeUserContext);
+			seenPaths.add(claudeUserContext.path);
+		}
 	}
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];

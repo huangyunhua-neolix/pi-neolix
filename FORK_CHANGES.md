@@ -1,4 +1,4 @@
-# Fork Change Log — pi-neolix
+# Fork Change Log - pi-neolix
 
 > 本文件记录 **pi-neolix** fork 相对 upstream(pi 官方仓库)的**自定义源码改动**。
 >
@@ -15,10 +15,11 @@
 
 1. `git fetch <upstream> main`
 2. `git rebase <upstream>/main`(或 merge)
-3. 若下列文件出现冲突 / 被上游改动覆盖,按对应章节的「冲突处理」恢复:
-   - `packages/coding-agent/src/core/web-bridge.ts` — **新增文件**,upstream 不会有同名冲突,除非上游也加了 `web-bridge.ts`。
-   - `packages/coding-agent/src/modes/interactive/interactive-mode.ts` — 4 处接线点,见下文「接入位置」。
+3. 若下列文件出现冲突 / 被上游改动覆盖，按对应章节的「冲突处理」恢复：
+   - `packages/coding-agent/src/core/web-bridge.ts` — **新增文件**，upstream 不会有同名冲突，除非上游也加了 `web-bridge.ts`。
+   - `packages/coding-agent/src/modes/interactive/interactive-mode.ts` — 4 处接线点，见下文「接入位置」。
    - `packages/coding-agent/test/web-bridge.test.ts` — 新增测试文件。
+   - `packages/coding-agent/src/core/resource-loader.ts` — FEAT-002 两处改动（候选顺序 + 用户级 `~/.claude/CLAUDE.md`），见下文。
 4. 同步后跑 `npm run check`(coding-agent)和 `web-bridge` 的单测,确认改动仍生效。
 5. 如果 fork feature 已被 upstream 以等价方式实现,删除本文件对应章节并改为引用 upstream 实现。
 
@@ -32,9 +33,9 @@
 
 ## 改动清单
 
-### FEAT-001 — Web Adapter 信号桥(OSC 9998 / 9999)
+### FEAT-001 - Web Adapter 信号桥(OSC 9998 / 9999)
 
-**状态**: 已实现 · **日期**: 2026-06-19 · **动机**: 让 pi 在 freecode-web 适配器下,会话状态 / 计费 / context 跟 freecode 一样准确(否则 web UI 全显示 "—")。
+**状态**: 已实现 · **日期**: 2026-06-19 · **动机**: 让 pi 在 freecode-web 适配器下,会话状态 / 计费 / context 跟 freecode 一样准确(否则 web UI 全显示 "-")。
 
 #### 背景 / 契约
 
@@ -100,7 +101,7 @@ pi 原本不发射这些序列,web server 把 pi 当 passthrough backend,状态/
 
 发射仅在 `process.env.FREECODE_WEB === "1"` 时启用(`isWebAdapter()`)。
 web server 的 `BuildChildEnv_` 给所有 spawn 的 CLI 子进程注入该变量。
-**裸终端运行 pi 时完全静默**——OSC 对普通终端是不可见的(未知 OSC 被吞),
+**裸终端运行 pi 时完全静默**--OSC 对普通终端是不可见的(未知 OSC 被吞),
 且是非光标移动序列,不干扰 pi 自身的 TUI 全屏渲染。
 
 #### 冲突处理
@@ -126,14 +127,93 @@ cd packages/coding-agent
 #### 验证(端到端,需配套 web server)
 
 启动一个 pi 会话后,web 侧 LED 应从 idle→running,context 条 / cost 会随 turn 更新,
-而非一直显示 "—"。autoupdate 的 subagent gate 也会因 `agents=1` 在 turn 中阻塞安装。
+而非一直显示 "-"。autoupdate 的 subagent gate 也会因 `agents=1` 在 turn 中阻塞安装。
+
+---
+
+### FEAT-002 - CLAUDE.md 优先加载 + 用户级 `~/.claude/CLAUDE.md`
+
+**状态**: 已实现 · **日期**: 2026-06-19 · **动机**: 让 pi 的 context file 发现逻辑对齐
+freecode CLI 的 memory 加载模型--(1) 同一目录同时存在 `AGENTS.md` 和 `CLAUDE.md` 时,
+**优先 CLAUDE.md**;(2) 除全局 `~/.pi/agent/` 外,**额外加载用户级 `~/.claude/CLAUDE.md`**,
+让 pi 与 freecode CLI 共享同一份用户指令。
+
+#### 背景:freecode CLI 加载模型(参考)
+
+freecode(`src/utils/claudemd.ts`)按以下层级加载,**后加载优先级更高**(离 cwd 越近越优先):
+
+| 层 | 路径 |
+|---|---|
+| Managed | `<managed>/.claude/CLAUDE.md` |
+| **User** | **`~/.claude/CLAUDE.md`**(`getClaudeConfigHomeDir`) |
+| Project(每层) | `CLAUDE.md` + `.claude/CLAUDE.md` + `.claude/rules/*.md` |
+| Local | `<dir>/CLAUDE.local.md` |
+
+#### 改动文件
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `packages/coding-agent/src/core/resource-loader.ts` | 修改 | (1) `loadContextFileFromDir` 的候选顺序从 `[AGENTS.md, AGENTS.MD, CLAUDE.md, CLAUDE.MD]` 改为 `[CLAUDE.md, CLAUDE.MD, AGENTS.md, AGENTS.MD]`;(2) `loadProjectContextFiles` 在全局段额外读 `~/.claude/CLAUDE.md`(仅 CLAUDE.md 候选,不含 AGENTS.md)。 |
+
+#### 接入位置(代码)
+
+1. **候选顺序**(`loadContextFileFromDir`):
+   ```ts
+   // FEAT-002 (freecode-web adapter): CLAUDE.md is preferred over AGENTS.md
+   const candidates = ["CLAUDE.md", "CLAUDE.MD", "AGENTS.md", "AGENTS.MD"];
+   ```
+2. **用户级补读**(`loadProjectContextFiles`,agentDir 段之后):
+   ```ts
+   // FEAT-002: also load the freecode user-level memory file ~/.claude/CLAUDE.md
+   const claudeUserDir = resolvePath(join(homedir(), ".claude"));
+   if (claudeUserDir !== resolvedAgentDir) {
+       const claudeUserContext = loadContextFileFromDir(claudeUserDir);
+       if (claudeUserContext && !seenPaths.has(claudeUserContext.path)) {
+           contextFiles.push(claudeUserContext);
+           seenPaths.add(claudeUserContext.path);
+       }
+   }
+   ```
+
+#### 范围说明(相对 freecode 的取舍)
+
+本 feat **不**实现 freecode 的以下能力(方案 A 边界):
+- `.claude/CLAUDE.md`(项目内嵌套)
+- `.claude/rules/*.md`
+- `CLAUDE.local.md`(私有项目指令)
+- Managed memory
+如需对齐,后续另开 FEAT。
+
+#### 冲突处理
+
+- **`loadContextFileFromDir` 的候选数组被上游重写** → 重新把 `CLAUDE.md` 调到 `AGENTS.md` 之前(双大小写变体都保持 CLAUDE 在前)。
+- **`loadProjectContextFiles` 全局段被重写** → 在 agentDir 读取之后、项目 walk 之前,补回 `~/.claude/CLAUDE.md` 的加载块。
+- **`homedir` / `resolvePath` import 变化** → `homedir` from `node:os`,`resolvePath` from `../utils/paths.ts`,两者保持。
+- **`agentDir` 本身已是 `~/.claude`**(理论可能,实际不会)→ `if (claudeUserDir !== resolvedAgentDir)` 去重,不会重复读。
+
+#### 测试
+
+```bash
+cd packages/coding-agent
+./node_modules/.bin/vitest --run test/resource-loader.test.ts   # 22/22
+../../node_modules/.bin/tsgo -p tsconfig.build.json              # 0 error
+```
+
+#### 验证(行为)
+
+对一个同时有 `AGENTS.md` 和 `CLAUDE.md` 的项目,pi 应优先加载 `CLAUDE.md`;
+存在 `~/.claude/CLAUDE.md` 时会被一并加载(顺序在项目文件之前,即优先级更低)。
+可用以下临时脚本确认(验证后删除):
+```ts
+import { loadProjectContextFiles } from "../src/core/resource-loader.ts";
+loadProjectContextFiles({ cwd: "<project>", agentDir: "~/.pi/agent" });
+```
 
 ---
 
 ## 模板:新增 fork feature 时照此填写
 
 ```
-### FEAT-XXX — <一句话标题>
+### FEAT-XXX - <一句话标题>
 
 **状态**: 已实现/进行中 · **日期**: YYYY-MM-DD · **动机**: <为什么 fork 要这个>。
 
