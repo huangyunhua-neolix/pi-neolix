@@ -203,7 +203,7 @@ export async function generateBranchSummary(
 	options: GenerateBranchSummaryOptions,
 ): Promise<Result<BranchSummaryResult, BranchSummaryError>> {
 	const { model, apiKey, headers, signal, customInstructions, replaceInstructions, reserveTokens = 16384 } = options;
-	const contextWindow = model.contextWindow || 128000;
+	const contextWindow = model.contextWindow || 200000;
 	const tokenBudget = contextWindow - reserveTokens;
 
 	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget);

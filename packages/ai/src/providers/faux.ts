@@ -424,7 +424,7 @@ export function registerFauxProvider(options: RegisterFauxProviderOptions = {}):
 		reasoning: definition.reasoning ?? false,
 		input: definition.input ?? ["text", "image"],
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: definition.contextWindow ?? 128000,
+		contextWindow: definition.contextWindow ?? 200000,
 		maxTokens: definition.maxTokens ?? 16384,
 	})) as [Model<string>, ...Model<string>[]];
 
