@@ -276,6 +276,46 @@ const r = discoverClaudePluginPaths();  // skillPaths / promptPaths / loadedPlug
 
 ---
 
+### FEAT-004 — 屏蔽上游更新检查与 self-update
+
+**状态**: 已实现 · **日期**: 2026-06-19 · **动机**: 本 fork(pi-neolix)不通过
+pi.dev / upstream npm 发版,而是**定期从 fork 同步、经 freecode-web-submodule 的
+autoupdate 渠道分发**。upstream 的版本号对本 fork 无意义,因此:① 启动时的版本检查
+(去 `pi.dev/api/latest-version`)只会误导;② `pi update` 会重装 upstream 包覆盖 fork。
+本 feat 同时屏蔽这两条路径。
+
+#### 设计
+
+在 `config.ts` 加编译期常量 `IS_FORK_BUILD = true`,三处生效:
+
+1. `utils/version-check.ts` 的 `getLatestPiRelease()` — fork 构建时直接 `return undefined`,
+   从源头不联网(启动检查 + `pi update` 检查都走这个函数)。`PI_SKIP_VERSION_CHECK` /
+   `PI_OFFLINE` 原有开关保留作为运行时退路。
+2. `package-manager-cli.ts` 的 `update > updateTargetIncludesSelf` 分支 — fork 构建时
+   打印说明并 `return true`,**拒绝 self-update**,避免误装 upstream 包。
+3. (未改动)interactive-mode 启动检查:调用 `checkForNewPiVersion` → 走 (1) 返回
+   undefined → 不弹通知,自然失效。
+
+`IS_FORK_BUILD` 是编译期 `true`,minify 后 fetch 调用会被 tree-shake 掉——fork 构建体
+里不会残留到 pi.dev 的网络调用。
+
+#### 改动文件
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `packages/coding-agent/src/config.ts` | 修改 | 新增 `export const IS_FORK_BUILD = true` + 注释说明 fork 发版策略。 |
+| `packages/coding-agent/src/utils/version-check.ts` | 修改 | `getLatestPiRelease` 开头 `if (IS_FORK_BUILD) return undefined`。 |
+| `packages/coding-agent/src/package-manager-cli.ts` | 修改 | `update` 命令的 self 分支开头拦 fork 构建,提示走 freecode-web 升级。 |
+| `packages/coding-agent/test/version-check.test.ts` | 修改 | `vi.mock` 把已有 fetch 测试的 `IS_FORK_BUILD` 设为 false(跑 upstream 路径);新增 `fork build` describe 验证 `IS_FORK_BUILD=true` 时不联网。 |
+
+#### 验证(行为)
+
+- `getLatestPiRelease()` 在 fork 构建里返回 `undefined`,**不调用 `fetch`**(实测通过)。
+- `pi update`(或交互式 self-update)被拦,提示 "updates are managed by freecode-web"。
+- 升级路径:`freecode-web-submodule` 的 `package-all.sh` / autoupdate 重装。
+
+---
+
 ## 模板:新增 fork feature 时照此填写
 
 ```
