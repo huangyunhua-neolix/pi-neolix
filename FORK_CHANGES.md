@@ -15,11 +15,12 @@
 
 1. `git fetch <upstream> main`
 2. `git rebase <upstream>/main`(或 merge)
-3. 若下列文件出现冲突 / 被上游改动覆盖，按对应章节的「冲突处理」恢复：
-   - `packages/coding-agent/src/core/web-bridge.ts` — **新增文件**，upstream 不会有同名冲突，除非上游也加了 `web-bridge.ts`。
-   - `packages/coding-agent/src/modes/interactive/interactive-mode.ts` — 4 处接线点，见下文「接入位置」。
-   - `packages/coding-agent/test/web-bridge.test.ts` — 新增测试文件。
-   - `packages/coding-agent/src/core/resource-loader.ts` — FEAT-002 两处改动（候选顺序 + 用户级 `~/.claude/CLAUDE.md`），见下文。
+3. 若下列文件出现冲突 / 被上游改动覆盖,按对应章节的「冲突处理」恢复:
+   - `packages/coding-agent/src/core/web-bridge.ts` - **新增文件**,upstream 不会有同名冲突,除非上游也加了 `web-bridge.ts`。
+   - `packages/coding-agent/src/modes/interactive/interactive-mode.ts` - 4 处接线点,见下文「接入位置」。
+   - `packages/coding-agent/test/web-bridge.test.ts` - 新增测试文件。
+   - `packages/coding-agent/src/core/resource-loader.ts` — FEAT-002 两处改动(候选顺序 + 用户级 `~/.claude/CLAUDE.md`)+ FEAT-003 `reload()` 注入 plugin 发现,见下文。
+   - `packages/coding-agent/src/core/claude-plugins.ts` — **新增文件**(FEAT-003),upstream 不会有同名冲突。
 4. 同步后跑 `npm run check`(coding-agent)和 `web-bridge` 的单测,确认改动仍生效。
 5. 如果 fork feature 已被 upstream 以等价方式实现,删除本文件对应章节并改为引用 upstream 实现。
 
@@ -206,6 +207,65 @@ cd packages/coding-agent
 ```ts
 import { loadProjectContextFiles } from "../src/core/resource-loader.ts";
 loadProjectContextFiles({ cwd: "<project>", agentDir: "~/.pi/agent" });
+```
+
+---
+
+### FEAT-003 - 加载 Claude Code / freecode plugin 的 skills + slash commands
+
+**状态**: 已实现 · **日期**: 2026-06-19 · **动机**: 让 pi 像 freecode CLI 一样能使用通过
+freecode 装好的 Claude Code plugin(如 `superpowers`、`ralph-loop`)。这些 plugin 的
+能力本质是 `skills/`(SKILL.md)和 `commands/`(frontmatter .md)--pi 已有完全兼容的
+解析器,只是默认搜索目录不同。本 feat 让 pi 复用同一份已装 plugin,无需重新实现
+marketplace / 安装器。
+
+#### 背景:freecode plugin 布局
+
+`~/.claude/plugins/installed_plugins.json`(freecode 的权威启用记录)列出每个已装 plugin 的
+`installPath`,指向 `~/.claude/plugins/cache/<marketplace>/<plugin>/<ver>/`。每个 plugin 可能含:
+- `skills/`(superpowers:14 个 SKILL.md)
+- `commands/`(ralph-loop:3 个 frontmatter .md)
+- `hooks/`、MCP 等(本 feat 不处理)
+
+#### 改动文件
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `packages/coding-agent/src/core/claude-plugins.ts` | 新增 | 读 `installed_plugins.json`,返回每个启用 plugin 的 `skills/` 与 `commands/` 路径。防御式:坏 JSON / 缺失 installPath / 非目录一律跳过,不报错。`PI_DISABLE_CLAUDE_PLUGINS=1` 可关停。 |
+| `packages/coding-agent/src/core/resource-loader.ts` | 修改 | `reload()` 开头调用 `discoverClaudePluginPaths()`,把 skills 路径追加到 `additionalSkillPaths`、commands 路径追加到 `additionalPromptTemplatePaths`。受 `noSkills`/`noPromptTemplates` 门控,保留原 opt-out 语义。 |
+| `packages/coding-agent/test/claude-plugins.test.ts` | 新增 | 5 个单测:disabled / manifest 缺失 / 坏 JSON / 正常多 plugin / 取最新版本条目。 |
+
+#### 范围(方案 1 边界)
+
+- **仅发现**(只读 `installed_plugins.json`),**不安装/不更新** plugin -- 安装仍走 freecode CLI(`/plugin ...`)。
+- 仅消费 `skills/`(SKILL.md)和 `commands/`(frontmatter .md);plugin 的 hooks、MCP servers、setting 注入等**不处理**。
+- 同名 skill 冲突由 pi 既有 collision 诊断处理(user/project 优先级高于 plugin path)。
+
+#### 冲突处理
+
+- **`reload()` 被上游重写** → 在 `reload` 开头重新插入 `discoverClaudePluginPaths()` 调用,
+  结果分别追加进 `additionalSkillPaths` / `additionalPromptTemplatePaths`,
+  并受 `noSkills`/`noPromptTemplates` 门控。
+- **`installed_plugins.json` schema 变化**(version / 字段名) → `claude-plugins.ts`
+  只读 `plugins.<key>[].installPath`,容错性强;若字段重名,更新 `InstalledPluginsFile`。
+- **`claude-plugins.ts` 被删** → 从本 fork 历史恢复,或按本节重建。
+- **plugin 提供非 skill/command 能力**(hooks/MCP) → 本 feat 明确不处理,见范围。
+
+#### 测试
+
+```bash
+cd packages/coding-agent
+./node_modules/.bin/vitest --run test/claude-plugins.test.ts    # 5/5
+./node_modules/.bin/vitest --run test/resource-loader.test.ts  # 22/22(含 noSkills 门控)
+../../node_modules/.bin/tsgo -p tsconfig.build.json            # 0 error
+```
+
+#### 验证(行为)
+
+装了 `superpowers` 后,pi 启动应多出 14 个 skill(brainstorming / test-driven-development 等);
+装了 `ralph-loop` 后多出 3 个 slash command(`/ralph-loop` 等)。可用临时脚本确认(验证后删除):
+```ts
+import { discoverClaudePluginPaths } from "../src/core/claude-plugins.ts";
+const r = discoverClaudePluginPaths();  // skillPaths / promptPaths / loadedPlugins
 ```
 
 ---
