@@ -88,6 +88,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
+import { WebBridge } from "../../core/web-bridge.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -322,6 +323,9 @@ export class InteractiveMode {
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
+	// Emits OSC 9998/9999 status/cost/context frames to the freecode-web PTY
+	// adapter. No-op unless FREECODE_WEB=1 (bare terminal stays silent).
+	private webBridge = new WebBridge();
 	private signalCleanupHandlers: Array<() => void> = [];
 
 	// Track if editor is in bash mode (text starts with !)
@@ -2733,6 +2737,9 @@ export class InteractiveMode {
 		this.unsubscribe = this.session.subscribe(async (event) => {
 			await this.handleEvent(event);
 		});
+		// Re-emit status / cost / context as OSC frames for the web adapter.
+		// attach() detaches any prior subscription first, so rebind is safe.
+		this.webBridge.attach(this.session);
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -5760,6 +5767,8 @@ export class InteractiveMode {
 		if (this.unsubscribe) {
 			this.unsubscribe();
 		}
+		// Drop the web-bridge subscription so it can't fire after teardown.
+		this.webBridge.detach();
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;
