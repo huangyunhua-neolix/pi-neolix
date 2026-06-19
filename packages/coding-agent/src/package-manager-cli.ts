@@ -10,6 +10,7 @@ import {
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
+	IS_FORK_BUILD,
 	PACKAGE_NAME,
 	type SelfUpdateCommand,
 	VERSION,
@@ -671,6 +672,17 @@ export async function handlePackageCommand(
 					}
 				}
 				if (updateTargetIncludesSelf(target)) {
+					if (IS_FORK_BUILD) {
+						// FEAT-004: this fork ships via freecode-web-submodule autoupdate,
+						// never via pi.dev/upstream npm. Self-update would reinstall the
+						// upstream package and clobber the fork — refuse it outright.
+						console.log(
+							chalk.yellow(
+								`${APP_NAME} updates are managed by freecode-web. Use the freecode-web installer / autoupdate to upgrade; self-update is disabled in this build.`,
+							),
+						);
+						return true;
+					}
 					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
 						return true;

@@ -1,4 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// FEAT-004: IS_FORK_BUILD is a compile-time constant (true in this fork). The
+// fetch-based tests below exercise the *upstream* code path, so we mock config
+// to report a non-fork build for those tests. The fork-specific behaviour is
+// covered in the dedicated "fork build" describe block.
+vi.mock("../src/config.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/config.ts")>();
+	return { ...actual, IS_FORK_BUILD: false };
+});
+
 import {
 	checkForNewPiVersion,
 	comparePackageVersions,
@@ -86,6 +96,26 @@ describe("version checks", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(getLatestPiVersion("1.2.3")).resolves.toBeUndefined();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("version checks (fork build — FEAT-004)", () => {
+	// Re-import with IS_FORK_BUILD forced true to assert the fork short-circuit.
+	// vi.doMock applies only to subsequently imported modules, in an isolated
+	// registry, so it does not disturb the non-fork describe above.
+	it("skips all network calls when IS_FORK_BUILD is true", async () => {
+		vi.resetModules();
+		vi.doMock("../src/config.ts", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("../src/config.ts")>();
+			return { ...actual, IS_FORK_BUILD: true };
+		});
+		const { getLatestPiRelease } = await import("../src/utils/version-check.ts");
+
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(getLatestPiRelease("1.2.3")).resolves.toBeUndefined();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });

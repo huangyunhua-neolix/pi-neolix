@@ -471,6 +471,22 @@ try {
 }
 
 const piConfigName: string | undefined = pkg.piConfig?.name;
+
+/**
+ * Is this a downstream fork build? (FEAT-004)
+ *
+ * This fork (pi-neolix) is distributed exclusively through the
+ * freecode-web-submodule autoupdate channel — never via pi.dev or the upstream
+ * npm package. When true, pi MUST NOT:
+ *   - phone home to pi.dev/api/latest-version (version check is skipped), and
+ *   - honor `pi update` / self-update (which would reinstall the upstream
+ *     package and clobber the fork).
+ *
+ * Fork releases flow in via freecode-web; upstream version numbers are
+ * meaningless here, so the update notifier would only ever mislead.
+ */
+export const IS_FORK_BUILD = true;
+
 export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
 export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
