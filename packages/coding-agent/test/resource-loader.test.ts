@@ -15,9 +15,16 @@ import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 describe("DefaultResourceLoader", () => {
 	let tempDir: string;
 	let agentDir: string;
+	let prevDisablePlugins: string | undefined;
 	let cwd: string;
 
 	beforeEach(() => {
+		// FEAT-003: isolate from the real ~/.claude plugin/skill store so
+		// existing reload/diagnostic assertions are not polluted by the host's
+		// installed plugins or ~/.claude/skills. Dedicated plugin tests live in
+		// claude-plugins.test.ts.
+		prevDisablePlugins = process.env.PI_DISABLE_CLAUDE_PLUGINS;
+		process.env.PI_DISABLE_CLAUDE_PLUGINS = "1";
 		tempDir = join(tmpdir(), `rl-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		cwd = join(tempDir, "project");
@@ -27,6 +34,7 @@ describe("DefaultResourceLoader", () => {
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true });
+		process.env.PI_DISABLE_CLAUDE_PLUGINS = prevDisablePlugins;
 	});
 
 	describe("reload", () => {

@@ -137,4 +137,58 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("also exposes user-level ~/.claude/skills and ~/.claude/commands", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
+		// user-level skills (e.g. compound-engineering ce-* family)
+		mkdirSync(join(dir, ".claude", "skills", "ce-compound"), { recursive: true });
+		writeFileSync(
+			join(dir, ".claude", "skills", "ce-compound", "SKILL.md"),
+			"---\nname: ce-compound\ndescription: doc a solved problem\n---\n",
+		);
+		// user-level command
+		mkdirSync(join(dir, ".claude", "commands"), { recursive: true });
+		writeFileSync(join(dir, ".claude", "commands", "dual-review.md"), "---\ndescription: dual review\n---\n");
+		// no installed_plugins.json -> plugin section contributes nothing,
+		// but user-level dirs must still be discovered.
+		withHome(dir);
+		try {
+			const result = discoverClaudePluginPaths();
+			expect(result.skillPaths).toEqual([join(dir, ".claude", "skills")]);
+			expect(result.promptPaths).toEqual([join(dir, ".claude", "commands")]);
+			expect(result.loadedPlugins).toEqual([]); // no plugins in manifest
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("merges plugin paths with user-level paths together", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
+		const pluginsDir = join(dir, ".claude", "plugins");
+		mkdirSync(pluginsDir, { recursive: true });
+
+		// a plugin with skills
+		const pluginA = join(dir, "pluginA", "1.0.0");
+		mkdirSync(join(pluginA, "skills", "tdd"), { recursive: true });
+		writeFileSync(join(pluginA, "skills", "tdd", "SKILL.md"), "---\nname: tdd\n---\n");
+		writeFileSync(
+			join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({ plugins: { "a@market": [{ installPath: pluginA, version: "1.0.0" }] } }),
+		);
+		// user-level skills alongside
+		mkdirSync(join(dir, ".claude", "skills", "ce-compound"), { recursive: true });
+		writeFileSync(join(dir, ".claude", "skills", "ce-compound", "SKILL.md"), "---\nname: ce-compound\n---\n");
+
+		withHome(dir);
+		try {
+			const result = discoverClaudePluginPaths();
+			expect(result.skillPaths).toEqual([
+				join(pluginA, "skills"),
+				join(dir, ".claude", "skills"),
+			]);
+			expect(result.loadedPlugins).toEqual(["a@market"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

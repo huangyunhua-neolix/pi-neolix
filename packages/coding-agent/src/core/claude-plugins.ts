@@ -1,11 +1,16 @@
 /**
- * Claude Code plugin discovery (FEAT-003).
+ * Claude Code / freecode plugin & user-resource discovery (FEAT-003).
  *
- * pi reuses Claude Code / freecode's installed plugins to provide their skills
- * and slash commands. This module reads `~/.claude/plugins/installed_plugins.json`
- * (the canonical record of which plugins are installed/enabled, as written by
- * freecode CLI's plugin manager) and exposes the per-plugin `skills/` and
- * `commands/` directories so pi's own skill/prompt loaders can pick them up.
+ * pi reuses Claude Code / freecode's installed plugins AND user-level
+ * resource directories so the same skills and slash commands are available
+ * in pi without reimplementing the marketplace/installer. Two sources:
+ *
+ *   1. Plugins: `~/.claude/plugins/installed_plugins.json` lists each enabled
+ *      plugin's installPath; we expose its `skills/` and `commands/` dirs
+ *      (e.g. superpowers, ralph-loop).
+ *   2. User level: `~/.claude/skills/` and `~/.claude/commands/` — the
+ *      freecode/Claude Code user resource roots. This is where compound-
+ *      engineering skills (ce-*) and user-defined slash commands live.
  *
  * Scope (plan A): discovery only — pi does NOT install/update plugins itself.
  * Install plugins through freecode CLI (`/plugin ...`) and pi will pick them up
@@ -63,47 +68,57 @@ export function discoverClaudePluginPaths(): ClaudePluginPaths {
 	}
 
 	const manifestPath = join(getClaudeConfigHome(), "plugins", "installed_plugins.json");
-	if (!existsSync(manifestPath)) {
-		return result;
+	if (existsSync(manifestPath)) {
+		let parsed: InstalledPluginsFile;
+		try {
+			parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as InstalledPluginsFile;
+		} catch {
+			// Corrupt manifest — skip plugin discovery, but still expose
+			// user-level dirs below.
+			parsed = {};
+		}
+
+		const plugins = parsed.plugins;
+		if (plugins && typeof plugins === "object") {
+			for (const [key, installs] of Object.entries(plugins)) {
+				if (!Array.isArray(installs) || installs.length === 0) {
+					continue;
+				}
+				// Use the most recent install entry (last in array). freecode appends on
+				// update, so the tail is the current version.
+				const latest = installs[installs.length - 1];
+				const installPath = latest?.installPath;
+				if (!installPath) {
+					continue;
+				}
+				if (!existsSync(installPath)) {
+					continue;
+				}
+
+				const skillsDir = join(installPath, "skills");
+				const commandsDir = join(installPath, "commands");
+				if (existsSync(skillsDir) && statSync(skillsDir).isDirectory()) {
+					result.skillPaths.push(resolvePath(skillsDir));
+					result.loadedPlugins.push(key);
+				}
+				if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
+					result.promptPaths.push(resolvePath(commandsDir));
+				}
+			}
+		}
 	}
 
-	let parsed: InstalledPluginsFile;
-	try {
-		parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as InstalledPluginsFile;
-	} catch {
-		// Corrupt manifest — leave pi untouched.
-		return result;
+	// FEAT-003 (user level): also expose freecode's user resource roots,
+	// `~/.claude/skills` and `~/.claude/commands`. These hold user-installed
+	// skills (e.g. the compound-engineering `ce-*` family) and user-defined
+	// slash commands, mirrored verbatim from Claude Code / freecode.
+	const userSkillsDir = join(getClaudeConfigHome(), "skills");
+	const userCommandsDir = join(getClaudeConfigHome(), "commands");
+	if (existsSync(userSkillsDir) && statSync(userSkillsDir).isDirectory()) {
+		result.skillPaths.push(resolvePath(userSkillsDir));
 	}
-
-	const plugins = parsed.plugins;
-	if (!plugins || typeof plugins !== "object") {
-		return result;
-	}
-
-	for (const [key, installs] of Object.entries(plugins)) {
-		if (!Array.isArray(installs) || installs.length === 0) {
-			continue;
-		}
-		// Use the most recent install entry (last in array). freecode appends on
-		// update, so the tail is the current version.
-		const latest = installs[installs.length - 1];
-		const installPath = latest?.installPath;
-		if (!installPath) {
-			continue;
-		}
-		if (!existsSync(installPath)) {
-			continue;
-		}
-
-		const skillsDir = join(installPath, "skills");
-		const commandsDir = join(installPath, "commands");
-		if (existsSync(skillsDir) && statSync(skillsDir).isDirectory()) {
-			result.skillPaths.push(resolvePath(skillsDir));
-			result.loadedPlugins.push(key);
-		}
-		if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
-			result.promptPaths.push(resolvePath(commandsDir));
-		}
+	if (existsSync(userCommandsDir) && statSync(userCommandsDir).isDirectory()) {
+		result.promptPaths.push(resolvePath(userCommandsDir));
 	}
 
 	return result;

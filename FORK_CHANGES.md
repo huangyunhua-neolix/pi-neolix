@@ -19,8 +19,8 @@
    - `packages/coding-agent/src/core/web-bridge.ts` - **新增文件**,upstream 不会有同名冲突,除非上游也加了 `web-bridge.ts`。
    - `packages/coding-agent/src/modes/interactive/interactive-mode.ts` - 4 处接线点,见下文「接入位置」。
    - `packages/coding-agent/test/web-bridge.test.ts` - 新增测试文件。
-   - `packages/coding-agent/src/core/resource-loader.ts` — FEAT-002 两处改动(候选顺序 + 用户级 `~/.claude/CLAUDE.md`)+ FEAT-003 `reload()` 注入 plugin 发现,见下文。
-   - `packages/coding-agent/src/core/claude-plugins.ts` — **新增文件**(FEAT-003),upstream 不会有同名冲突。
+   - `packages/coding-agent/src/core/resource-loader.ts` - FEAT-002 两处改动(候选顺序 + 用户级 `~/.claude/CLAUDE.md`)+ FEAT-003 `reload()` 注入 plugin 发现,见下文。
+   - `packages/coding-agent/src/core/claude-plugins.ts` - **新增文件**(FEAT-003),upstream 不会有同名冲突。
 4. 同步后跑 `npm run check`(coding-agent)和 `web-bridge` 的单测,确认改动仍生效。
 5. 如果 fork feature 已被 upstream 以等价方式实现,删除本文件对应章节并改为引用 upstream 实现。
 
@@ -211,28 +211,32 @@ loadProjectContextFiles({ cwd: "<project>", agentDir: "~/.pi/agent" });
 
 ---
 
-### FEAT-003 - 加载 Claude Code / freecode plugin 的 skills + slash commands
+### FEAT-003 — 加载 Claude Code / freecode plugin 的 skills + slash commands
 
 **状态**: 已实现 · **日期**: 2026-06-19 · **动机**: 让 pi 像 freecode CLI 一样能使用通过
-freecode 装好的 Claude Code plugin(如 `superpowers`、`ralph-loop`)。这些 plugin 的
-能力本质是 `skills/`(SKILL.md)和 `commands/`(frontmatter .md)--pi 已有完全兼容的
-解析器,只是默认搜索目录不同。本 feat 让 pi 复用同一份已装 plugin,无需重新实现
-marketplace / 安装器。
+freecode 装好的 Claude Code plugin(如 `superpowers`、`ralph-loop`)以及用户级 skill/command
+(如 compound-engineering 的 `ce-*` 系列)。这些资源的本质是 `skills/`(SKILL.md)和
+`commands/`(frontmatter .md)——pi 已有完全兼容的解析器,只是默认搜索目录不同。本 feat
+让 pi 复用 freecode 的两套来源,无需重新实现 marketplace / 安装器。
 
-#### 背景:freecode plugin 布局
+#### 背景:freecode 资源布局
 
-`~/.claude/plugins/installed_plugins.json`(freecode 的权威启用记录)列出每个已装 plugin 的
-`installPath`,指向 `~/.claude/plugins/cache/<marketplace>/<plugin>/<ver>/`。每个 plugin 可能含:
-- `skills/`(superpowers:14 个 SKILL.md)
-- `commands/`(ralph-loop:3 个 frontmatter .md)
-- `hooks/`、MCP 等(本 feat 不处理)
+两类来源:
+1. **Plugin**:`~~/.claude/plugins/installed_plugins.json`(freecode 的权威启用记录)
+   列出每个已装 plugin 的 `installPath`,指向
+   `~/.claude/plugins/cache/<marketplace>/<plugin>/<ver>/`。每个 plugin 可能含
+   `skills/`(superpowers:14 个 SKILL.md)、`commands/`(ralph-loop:3 个 frontmatter .md)、
+   hooks/MCP(本 feat 不处理)。
+2. **User level**:freecode 的用户资源根 `~/.claude/skills/` 和 `~/.claude/commands/`。
+   compound-engineering 的几十个 `ce-*` skill 就装在这里(不是 plugin)。
 
 #### 改动文件
 | 文件 | 类型 | 说明 |
 |---|---|---|
-| `packages/coding-agent/src/core/claude-plugins.ts` | 新增 | 读 `installed_plugins.json`,返回每个启用 plugin 的 `skills/` 与 `commands/` 路径。防御式:坏 JSON / 缺失 installPath / 非目录一律跳过,不报错。`PI_DISABLE_CLAUDE_PLUGINS=1` 可关停。 |
+| `packages/coding-agent/src/core/claude-plugins.ts` | 新增 | 读 `installed_plugins.json` 发现各启用 plugin 的 `skills/`/`commands/`,**并**额外暴露 freecode 用户级根 `~/.claude/skills` 与 `~/.claude/commands`(compound-engineering `ce-*` 所在)。防御式:坏 JSON / 缺失 / 非目录一律跳过,不报错。`PI_DISABLE_CLAUDE_PLUGINS=1` 可关停。 |
 | `packages/coding-agent/src/core/resource-loader.ts` | 修改 | `reload()` 开头调用 `discoverClaudePluginPaths()`,把 skills 路径追加到 `additionalSkillPaths`、commands 路径追加到 `additionalPromptTemplatePaths`。受 `noSkills`/`noPromptTemplates` 门控,保留原 opt-out 语义。 |
-| `packages/coding-agent/test/claude-plugins.test.ts` | 新增 | 5 个单测:disabled / manifest 缺失 / 坏 JSON / 正常多 plugin / 取最新版本条目。 |
+| `packages/coding-agent/test/claude-plugins.test.ts` | 新增 | 7 个单测:disabled / manifest 缺失 / 坏 JSON / 正常多 plugin / 取最新版本条目 / user-level 目录发现 / plugin+user 合并。 |
+| `packages/coding-agent/test/resource-loader.test.ts` | 修改 | `beforeEach`/`afterEach` 用 `PI_DISABLE_CLAUDE_PLUGINS` 隔离测试,避免宿主 `~/.claude/` 污染 diagnostics。 |
 
 #### 范围(方案 1 边界)
 
@@ -262,7 +266,9 @@ cd packages/coding-agent
 #### 验证(行为)
 
 装了 `superpowers` 后,pi 启动应多出 14 个 skill(brainstorming / test-driven-development 等);
-装了 `ralph-loop` 后多出 3 个 slash command(`/ralph-loop` 等)。可用临时脚本确认(验证后删除):
+装了 `ralph-loop` 后多出 3 个 slash command(`/ralph-loop` 等)。`~/.claude/skills/` 里的
+compound-engineering `ce-*`(本机 38 个,如 ce-compound / ce-brainstorm / ce-code-review)
+也会被 pi 加载。可用临时脚本确认(验证后删除):
 ```ts
 import { discoverClaudePluginPaths } from "../src/core/claude-plugins.ts";
 const r = discoverClaudePluginPaths();  // skillPaths / promptPaths / loadedPlugins
