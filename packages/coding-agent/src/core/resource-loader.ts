@@ -9,6 +9,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { discoverClaudePluginPaths } from "./claude-plugins.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	clearExtensionCache,
@@ -359,6 +360,22 @@ export class DefaultResourceLoader implements ResourceLoader {
 			clearExtensionCache();
 		}
 
+		// FEAT-003 (freecode-web adapter): pull skills + prompt-style commands from
+		// Claude Code / freecode plugins installed via freecode CLI (e.g. superpowers,
+		// ralph-loop). Discovery only — pi never installs/updates plugins. Merged
+		// here so both the bootstrap pass and normal reloads see them. Gated on
+		// noSkills/noPromptTemplates so those opt-outs keep their original semantics
+		// (no skill/prompt discovery at all, including from plugins).
+		const claudePlugins = discoverClaudePluginPaths();
+		if (!this.noSkills && claudePlugins.skillPaths.length > 0) {
+			this.additionalSkillPaths = this.mergePaths(this.additionalSkillPaths, claudePlugins.skillPaths);
+		}
+		if (!this.noPromptTemplates && claudePlugins.promptPaths.length > 0) {
+			this.additionalPromptTemplatePaths = this.mergePaths(
+				this.additionalPromptTemplatePaths,
+				claudePlugins.promptPaths,
+			);
+		}
 		let preTrustExtensions: LoadExtensionsResult | undefined;
 		if (options?.resolveProjectTrust) {
 			preTrustExtensions = await this.loadProjectTrustExtensions();
