@@ -2637,7 +2637,7 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/new") {
+			if (text === "/new" || text === "/clear") {
 				this.editor.setText("");
 				await this.handleClearCommand();
 				return;
