@@ -3,6 +3,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
@@ -82,6 +83,14 @@ function isDirectory(p: string): boolean {
 	}
 }
 
+/**
+ * Root of the freecode / Claude Code user config tree, normally `~/.claude`.
+ * freecode / Claude Code install their agents here (`~/.claude/agents`).
+ */
+function getClaudeConfigHome(): string {
+	return path.join(os.homedir(), ".claude");
+}
+
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
@@ -96,9 +105,14 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
+	const claudeUserDir = path.join(getClaudeConfigHome(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
+	// User agents come from TWO roots so freecode / Claude Code agents
+	// (`~/.claude/agents`) are available too. `~/.pi/agent/agents` takes
+	// precedence on name collisions (loaded last → overrides earlier entry).
+	const userAgents =
+		scope === "project" ? [] : [...loadAgentsFromDir(claudeUserDir, "user"), ...loadAgentsFromDir(userDir, "user")];
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 
 	const agentMap = new Map<string, AgentConfig>();
