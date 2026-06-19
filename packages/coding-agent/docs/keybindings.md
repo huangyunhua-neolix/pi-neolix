@@ -82,8 +82,8 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Cancel / abort |
-| `app.clear` | `ctrl+c` | Clear editor |
+| `app.interrupt` | `escape` | Cancel / abort (while running) |
+| `app.clear` | `ctrl+c` | Interrupt running session, else clear editor (press twice to quit) |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
