@@ -1012,4 +1012,88 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 		},
 	});
+
+	// ---------------------------------------------------------------------
+	// /agent:<name> <requirement> slash commands
+	// ---------------------------------------------------------------------
+	// Each discovered USER agent (from ~/.pi/agent/agents AND ~/.claude/agents)
+	// is exposed as a slash command so users can dispatch it directly from the
+	// input box, e.g. `/agent:code-reviewer review this diff`. The text after the
+	// command becomes the task delegated to the agent.
+	//
+	// Only user-scoped agents are registered as commands because the command list
+	// is built once at session start and must not depend on the project working
+	// directory. Project-local agents remain reachable via the `subagent` tool.
+	registerAgentSlashCommands(pi);
+}
+
+/**
+ * Register one `/agent:<name>` slash command per discovered user agent.
+ *
+ * Project-local agents are intentionally excluded: the command palette is
+ * session-global and must be stable regardless of cwd. Project agents stay
+ * reachable through the `subagent` tool (which already prompts for trust).
+ */
+function registerAgentSlashCommands(pi: ExtensionAPI): void {
+	// user scope does not depend on cwd (project discovery is skipped), so a
+	// placeholder cwd is safe here.
+	const discovery = discoverAgents(process.cwd(), "user");
+
+	// Render the agent's final answer inline as a markdown message.
+	pi.registerMessageRenderer("subagent-result", (message, _options, _theme) => {
+		const content = typeof message.content === "string" ? message.content : "";
+		return new Markdown(content, 0, 0, getMarkdownTheme());
+	});
+
+	for (const agent of discovery.agents) {
+		const commandName = `agent:${agent.name}`;
+		pi.registerCommand(commandName, {
+			description: agent.description,
+			argumentHint: "<requirement>",
+			handler: async (args, ctx) => {
+				const task = args.trim();
+				if (!task) {
+					ctx.ui.notify(`Usage: /${commandName} <requirement>`, "warning");
+					return;
+				}
+
+				// Re-discover at invocation time so renamed/added agents are picked up.
+				const current = discoverAgents(ctx.cwd, "user");
+				const makeDetails = (results: SingleResult[]): SubagentDetails => ({
+					mode: "single",
+					agentScope: "user",
+					projectAgentsDir: current.projectAgentsDir,
+					results,
+				});
+
+				ctx.ui.notify(`Running agent: ${agent.name}…`, "info");
+				const result = await runSingleAgent(
+					ctx.cwd,
+					current.agents,
+					agent.name,
+					task,
+					ctx.cwd,
+					undefined,
+					undefined,
+					undefined,
+					makeDetails,
+				);
+
+				if (isFailedResult(result)) {
+					const reason = result.stopReason ? ` (${result.stopReason})` : "";
+					ctx.ui.notify(`Agent ${agent.name} failed${reason}: ${getResultOutput(result)}`, "error");
+					return;
+				}
+
+				const output = getFinalOutput(result.messages).trim() || "(no output)";
+				// Surface the agent's answer as a user-visible message so it renders
+				// inline and is captured by the session transcript.
+				ctx.sendMessage({
+					customType: "subagent-result",
+					content: output,
+					display: true,
+				});
+			},
+		});
+	}
 }
