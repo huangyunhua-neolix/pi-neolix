@@ -191,4 +191,49 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("ignores plugins whose installPath is under the plugins cache directory", () => {
+		// Claude Code installs plugins into ~/.claude/plugins/cache/<publisher>/...
+		// Those same skills are mirrored at the user level (~/.claude/skills),
+		// so loading the cache copy creates false "collision" diagnostics.
+		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
+		const pluginsDir = join(dir, ".claude", "plugins");
+		mkdirSync(pluginsDir, { recursive: true });
+
+		// plugin in cache: should be IGNORED
+		const cachedPlugin = join(dir, ".claude", "plugins", "cache", "publisher", "superpowers", "5.1.0");
+		mkdirSync(join(cachedPlugin, "skills", "brainstorming"), { recursive: true });
+		writeFileSync(
+			join(cachedPlugin, "skills", "brainstorming", "SKILL.md"),
+			"---\nname: brainstorming\n---\n",
+		);
+
+		// plugin NOT in cache: should be loaded
+		const realPlugin = join(dir, "real-plugin", "1.0.0");
+		mkdirSync(join(realPlugin, "skills", "my-skill"), { recursive: true });
+		writeFileSync(join(realPlugin, "skills", "my-skill", "SKILL.md"), "---\nname: my-skill\n---\n");
+
+		writeFileSync(
+			join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				plugins: {
+					"superpowers@market": [{ installPath: cachedPlugin, version: "5.1.0" }],
+					"real@market": [{ installPath: realPlugin, version: "1.0.0" }],
+				},
+			}),
+		);
+
+		withHome(dir);
+		try {
+			const result = discoverClaudePluginPaths();
+			// cached plugin is ignored, real plugin is loaded. (User-level
+			// ~/.claude/skills is not created in this test, so only the real
+			// plugin's skills dir is present.)
+			expect(result.skillPaths).toEqual([join(realPlugin, "skills")]);
+			expect(result.loadedPlugins).toEqual(["real@market"]);
+			expect(result.loadedPlugins).not.toContain("superpowers@market");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

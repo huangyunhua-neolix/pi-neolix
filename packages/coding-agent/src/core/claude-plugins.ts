@@ -94,6 +94,16 @@ export function discoverClaudePluginPaths(): ClaudePluginPaths {
 				if (!existsSync(installPath)) {
 					continue;
 				}
+				// Skip the plugin cache directory. Claude Code installs plugins into
+				// `~/.claude/plugins/cache/<publisher>/<plugin>/<version>/`, and those
+				// same skills are mirrored at the user level (`~/.claude/skills/`).
+				// Loading both creates 14+ "collision" diagnostics for superpowers
+				// skills (brainstorming, test-driven-development, ...). The user-level
+				// copies are the trusted source, so we ignore the cache entirely.
+				const normalizedInstall = installPath.replace(/\\/g, "/");
+				if (normalizedInstall.includes("/plugins/cache/")) {
+					continue;
+				}
 
 				const skillsDir = join(installPath, "skills");
 				const commandsDir = join(installPath, "commands");
