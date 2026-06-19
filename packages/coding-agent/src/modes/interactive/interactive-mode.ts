@@ -2442,11 +2442,10 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
-			if (this.session.isStreaming) {
-				this.restoreQueuedMessagesToEditor({ abort: true });
-			} else if (this.session.isBashRunning) {
-				this.session.abortBash();
-			} else if (this.isBashMode) {
+			if (this.interruptActiveSession()) {
+				return;
+			}
+			if (this.isBashMode) {
 				this.editor.setText("");
 				this.isBashMode = false;
 				this.updateEditorBorderColor();
@@ -3328,7 +3327,31 @@ export class InteractiveMode {
 	// Key handlers
 	// =========================================================================
 
+	/**
+	 * Interrupt a running session (streaming or a bash tool currently running).
+	 * Returns true when something was interrupted so the caller can skip its
+	 * idle-state behaviour. The first two branches mirror onEscape so Ctrl+C
+	 * behaves like Esc while the agent is busy (Claude Code parity).
+	 */
+	private interruptActiveSession(): boolean {
+		if (this.session.isStreaming) {
+			this.restoreQueuedMessagesToEditor({ abort: true });
+			return true;
+		}
+		if (this.session.isBashRunning) {
+			this.session.abortBash();
+			return true;
+		}
+		return false;
+	}
+
 	private handleCtrlC(): void {
+		// While the agent is running, Ctrl+C interrupts it (like Esc), instead of
+		// clearing the editor. Idle behaviour (clear on first press, double-press
+		// to quit) is unchanged.
+		if (this.interruptActiveSession()) {
+			return;
+		}
 		const now = Date.now();
 		if (now - this.lastSigintTime < 500) {
 			void this.shutdown();
