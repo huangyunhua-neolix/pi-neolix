@@ -404,4 +404,57 @@ describe("AgentSession compaction characterization", () => {
 		expect(belowThresholdSpy).not.toHaveBeenCalled();
 		expect(disabledSpy).not.toHaveBeenCalled();
 	});
+
+	// Regression: overflow compaction must strip the trailing overflow assistant
+	// regardless of stopReason. isContextOverflow() detects THREE overflow shapes:
+	//   stopReason "error" (provider error), "stop" (z.ai silent overflow), and
+	//   "length" (Xiaomi MiMo truncation). The old strip guard only matched
+	//   stopReason === "error", so stop/length overflow messages stayed as the
+	//   trailing assistant, and the subsequent agent.continue() threw
+	//   "Cannot continue from message role: assistant".
+	describe.each([
+		["error", "prompt is too long: 300000 tokens > 200000 maximum"],
+		["stop", undefined], // z.ai-style silent overflow (input > contextWindow)
+		["length", undefined], // Xiaomi MiMo-style truncation overflow
+	] as const)("overflow compaction strips trailing assistant with stopReason %s", (stopReason, errorMessage) => {
+		it("strips the overflow message so continue() does not throw", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+			seedCompactableSession(harness);
+			useSummaryStreamFn(harness, "overflow compaction summary");
+
+			// Mirror a real overflow turn: a user message followed by the overflow
+			// assistant response. The overflow assistant is what gets stripped.
+			const overflowTimestamp = Date.now();
+			harness.sessionManager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: "trigger overflow" }],
+				timestamp: overflowTimestamp,
+			});
+			const overflowAssistant = createAssistant(harness, {
+				stopReason,
+				errorMessage,
+				totalTokens: stopReason === "error" ? 0 : 300_000,
+				timestamp: overflowTimestamp + 1,
+			});
+			harness.sessionManager.appendMessage(overflowAssistant);
+			harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+
+			const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+
+			// Sanity: the trailing message IS the overflow assistant before compaction.
+			const before = harness.session.agent.state.messages;
+			expect(before[before.length - 1]).toBe(overflowAssistant);
+
+			const result = await sessionInternals._runAutoCompaction("overflow", true);
+
+			expect(result).toBe(true);
+			// After overflow compaction the trailing overflow assistant must be
+			// stripped, so agent.continue() can resume from a user/toolResult message
+			// instead of throwing "Cannot continue from message role: assistant".
+			const after = harness.session.agent.state.messages;
+			expect(after[after.length - 1]).not.toBe(overflowAssistant);
+			expect(after[after.length - 1].role).not.toBe("assistant");
+		});
+	});
 });

@@ -2034,7 +2034,21 @@ export class AgentSession {
 			if (willRetry) {
 				const messages = this.agent.state.messages;
 				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
+				// Strip the overflow assistant before retrying. This branch is only
+				// reached when _checkCompaction detected an overflow via
+				// isContextOverflow(), which matches THREE stopReason shapes:
+				//   - "error"   (provider returned an explicit overflow error)
+				//   - "stop"    (z.ai-style silent overflow: request succeeded but
+				//                input tokens exceeded the context window)
+				//   - "length"  (Xiaomi MiMo-style: server truncated input, returned
+				//                finish_reason "length" with zero output)
+				// The previous guard only stripped stopReason === "error", so the
+				// stop/length overflow messages stayed as the trailing assistant,
+				// and the subsequent agent.continue() threw
+				// "Cannot continue from message role: assistant". Strip ANY
+				// trailing assistant here — it is the overflow message that
+				// triggered this compaction, regardless of stopReason.
+				if (lastMsg?.role === "assistant") {
 					this.agent.state.messages = messages.slice(0, -1);
 				}
 				return true;
