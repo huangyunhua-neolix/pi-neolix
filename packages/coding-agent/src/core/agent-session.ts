@@ -530,7 +530,15 @@ export class AgentSession {
 				this._lastAssistantMessage = event.message;
 
 				const assistantMsg = event.message as AssistantMessage;
-				if (assistantMsg.stopReason !== "error") {
+				// Reset the one-shot overflow-recovery guard only when this assistant is
+				// NOT an overflow message. isContextOverflow() matches three stopReason
+				// shapes (error/stop/length); the previous `!== "error"` check kept the
+				// guard only for error overflows, so a stop/length overflow reset it on
+				// message_end (before _checkCompaction ran), making the "no second
+				// recovery" gate ineffective for non-error overflows. Now all overflow
+				// shapes preserve the guard like errors do.
+				const contextWindow = this.model?.contextWindow ?? 0;
+				if (!isContextOverflow(assistantMsg, contextWindow)) {
 					this._overflowRecoveryAttempted = false;
 				}
 
