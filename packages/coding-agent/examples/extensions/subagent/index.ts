@@ -36,7 +36,8 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
  * dispatched with this model, overriding the agent file's `model` frontmatter.
  * Falls back to the agent-specified model when glm-5.2 is unavailable.
  */
-const PREFERRED_MODEL_ID = "glm-5.2";
+// Exported for unit tests (see test/subagent-model.test.ts).
+export const PREFERRED_MODEL_ID = "glm-5.2";
 
 /**
  * Resolve the model to dispatch a subagent with.
@@ -48,7 +49,7 @@ const PREFERRED_MODEL_ID = "glm-5.2";
  * wrong baseUrl). When `defaultProvider` is unknown or glm-5.2 is not available
  * under it, returns undefined so the caller falls back to the agent's own model.
  */
-function resolvePreferredModel(
+export function resolvePreferredModel(
 	modelRegistry: ModelRegistry | undefined,
 	defaultProvider: string | undefined,
 ): string | undefined {
@@ -304,6 +305,7 @@ async function runSingleAgent(
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	modelRegistry: ModelRegistry | undefined,
+	sessionModel: { provider: string; id: string } | undefined,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -340,7 +342,12 @@ async function runSingleAgent(
 	// provider, overriding the agent file's `model` frontmatter. Falls back to
 	// the agent-specified model when glm-5.2 is not usable.
 	const preferredModel = resolvePreferredModel(modelRegistry, defaultProvider);
-	const modelToUse = preferredModel ?? agent.model;
+	// `model: inherit` in an agent file means "use the parent session's model".
+	// The child pi does not resolve the bare token `inherit`, so expand it here
+	// into the canonical `provider/modelId` the child's --model understands.
+	const inheritedModel =
+		agent.model === "inherit" && sessionModel ? `${sessionModel.provider}/${sessionModel.id}` : undefined;
+	const modelToUse = preferredModel ?? inheritedModel ?? agent.model;
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	if (modelToUse) args.push("--model", modelToUse);
@@ -613,6 +620,7 @@ export default function (pi: ExtensionAPI) {
 						chainUpdate,
 						makeDetails("chain"),
 						ctx.modelRegistry,
+						ctx.model,
 					);
 					results.push(result);
 
@@ -692,6 +700,7 @@ export default function (pi: ExtensionAPI) {
 						},
 						makeDetails("parallel"),
 						ctx.modelRegistry,
+						ctx.model,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -729,6 +738,7 @@ export default function (pi: ExtensionAPI) {
 					onUpdate,
 					makeDetails("single"),
 					ctx.modelRegistry,
+					ctx.model,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {
@@ -1133,6 +1143,7 @@ function registerAgentSlashCommands(pi: ExtensionAPI): void {
 					undefined,
 					makeDetails,
 					ctx.modelRegistry,
+					ctx.model,
 				);
 
 				if (isFailedResult(result)) {

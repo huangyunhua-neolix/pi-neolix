@@ -446,19 +446,25 @@ skill 也在用户级 `~/.claude/skills/` 里 → 14 个同名 skill 全报 `col
 
 #### 设计（方案 A：强制覆盖）
 
-在 `runSingleAgent` 决定子进程 `--model` 时，先经 `resolvePreferredModel(modelRegistry)` 判断 glm-5.2 是否「可用」（任一 provider 下存在且认证已配置，即 `modelRegistry.getAvailable()` 里 id===`glm-5.2`）。
+在 `runSingleAgent` 决定子进程 `--model` 时，先经 `resolvePreferredModel(modelRegistry, defaultProvider)` 判断 glm-5.2 是否「可用」（在 **defaultProvider** 下存在且认证已配置）。`defaultProvider` 从 `~/.pi/agent/settings.json` 读，与注入子进程的 `--provider` 同源。
 
 - 可用 → 一律 `--model glm-5.2`，**忽略** agent 文件 frontmatter 的 `model`。
 - 不可用 → 回退 `agent.model`（原行为）。
+- `agent.model === "inherit"` → 展开为父会话模型的 `provider/modelId`（子进程不认识裸 token `inherit`，见下「inherit 解析」）。
 
-「可用性」判断在父进程 extension 层完成：`execute` 的 `ctx` 是 `ExtensionContext`，直接暴露 `ctx.modelRegistry`（`ExtensionCommandContext extends ExtensionContext`，所以 `/agent:<name>` slash command 的 handler 也能拿到）。子进程收到 `--model glm-5.2 --provider neolix`（provider 由本 FEAT 一并注入的 provider patch 提供），`resolveCliModel` 用 `buildFallbackModel` 在 neolix 下匹配，不会因跨 provider 同名（zai-coding-cn 等也有 glm-5.2）而 ambiguous。
+**provider 作用域（review 修复）**：「可用」只认 defaultProvider 那一个 provider，而非任一 provider。因为子进程被 `--provider` 钉死在 defaultProvider，若 glm-5.2 在别的 provider 下可证但 defaultProvider 下不可证，子进程会 `buildFallbackModel` 造出一个 defaultProvider 无法服务的假模型 → 静默派发失败。作用域到 defaultProvider 后，此场景安全回退到 agent.model。
+
+「可用性」判断在父进程 extension 层完成：`execute` 的 `ctx` 是 `ExtensionContext`，直接暴露 `ctx.modelRegistry`（`ExtensionCommandContext extends ExtensionContext`，所以 `/agent:<name>` slash command 的 handler 也能拿到）。子进程收到 `--model glm-5.2 --provider neolix`（provider 由本 FEAT 一并注入的 provider patch 提供），`resolveCliModel` 在 neolix 下精确匹配，不会因跨 provider 同名（opencode-go 等也有 id=`glm-5.2`）而 ambiguous。
+
+**inherit 解析（review 修复，pre-existing bug）**：agent 文件 `model: inherit` 表示「用父会话模型」。但子进程不认识裸 `inherit`，旧逻辑直接 `--model inherit` 传下去 → `resolveCliModel` 找不到名为 `inherit` 的模型 → neolix API 报 `Invalid model name passed in model=inherit`，派发失败（ce-* 系列 agent 全是 `model: inherit`，曾导致本 PR 的 persona 派发全部失败）。现 `runSingleAgent` 加 `sessionModel` 参数，当 `agent.model === "inherit"` 且 `sessionModel` 存在时展开为 `provider/modelId` 传给子进程。4 个调用点（single/parallel/chain + slash-command）均传 `ctx.model`。
 
 #### 改动文件
 
 | 文件 | 类型 | 说明 |
 |---|---|---|
-| `packages/coding-agent/examples/extensions/subagent/index.ts` | 修改 | (1) 新增 `PREFERRED_MODEL_ID="glm-5.2"` + `resolvePreferredModel(modelRegistry)`；(2) `runSingleAgent` 加参数 `modelRegistry`，决定 `--model` 时优先 glm-5.2，`currentResult.model` 记录实际使用的 model；(3) 4 个调用点（single/parallel/chain + slash-command）传入 `ctx.modelRegistry`；(4) 一并补上「注入 default provider」fork patch（读 `~/.pi/agent/settings.json` 的 `defaultProvider`，注入 `--provider`，避免子进程 model resolver fallthrough 到无认证内置 provider 导致 401）——此前只存在于本机 `~/.pi/agent/extensions/subagent/index.ts`，现统一进 examples。 |
-| `~/.pi/agent/extensions/subagent/index.ts`（本机，非 git） | 修改 | 同上逻辑同步到本机运行副本，立即生效。本机副本是旧版（缺 `/agent:<name>` slash command 注册），本次只加 glm-5.2 优先 + provider patch，不补 slash command（避免扩大范围）。 |
+| `packages/coding-agent/examples/extensions/subagent/index.ts` | 修改 | (1) 新增并 **export** `PREFERRED_MODEL_ID="glm-5.2"` + `resolvePreferredModel(modelRegistry, defaultProvider)`（参数含 defaultProvider，作用域可用性）；(2) `runSingleAgent` 加参数 `modelRegistry` + `sessionModel`，决定 `--model` 时优先 glm-5.2、`agent.model==="inherit"` 时展开为 session 模型，`currentResult.model` 记录实际使用的 model；(3) 4 个调用点（single/parallel/chain + slash-command）传入 `ctx.modelRegistry` + `ctx.model`；(4) 一并补上「注入 default provider」fork patch（读 `~/.pi/agent/settings.json` 的 `defaultProvider`，注入 `--provider`，避免子进程 model resolver fallthrough 到无认证内置 provider 导致 401）——此前只存在于本机 `~/.pi/agent/extensions/subagent/index.ts`，现统一进 examples。 |
+| `packages/coding-agent/test/subagent-model.test.ts` | 新增 | `resolvePreferredModel` 单元测试：defaultProvider 下可用→glm-5.2；别的 provider 下可用→undefined；不可用→undefined；defaultProvider 未知→undefined；registry undefined→undefined；多 provider 同名各自匹配。6/6 通过。 |
+| `~/.pi/agent/extensions/subagent/index.ts`（本机，非 git） | 修改 | 同上逻辑同步到本机运行副本，立即生效。本机副本是旧版（缺 `/agent:<name>` slash command 注册），本次只加 glm-5.2 优先 + provider patch + inherit 解析，不补 slash command（避免扩大范围）。 |
 
 #### 范围说明
 
@@ -468,7 +474,7 @@ skill 也在用户级 `~/.claude/skills/` 里 → 14 个同名 skill 全报 `col
 
 #### 冲突处理
 
-- **`runSingleAgent` 签名被 upstream 重写** → 重新加 `modelRegistry: ModelRegistry \| undefined` 参数，并在 `--model` 决定处恢复 `resolvePreferredModel` 优先逻辑。
+- **`runSingleAgent` 签名被 upstream 重写** → 重新加 `modelRegistry: ModelRegistry \| undefined` + `sessionModel: { provider; id } \| undefined` 参数，并在 `--model` 决定处恢复 `resolvePreferredModel` 优先 + `inherit` 展开逻辑。
 - **`ExtensionContext.modelRegistry` 被改名/移除** → 改用等价 API（如 `ctx.modelRegistry.getAvailable()`）；该字段定义在 `packages/coding-agent/src/core/extensions/types.ts` 的 `ExtensionContext`。
 - **`getAvailable()` 语义变化** → `resolvePreferredModel` 改用 `find(provider, id)` + `hasConfiguredAuth()` 显式判断（本机 neolix provider 下有 glm-5.2）。
 - **provider 注入 patch 被覆盖** → 在 `--model` 注入之后、`--tools` 之前重新插入读 settings.json 的 `--provider` 块。
@@ -479,6 +485,7 @@ skill 也在用户级 `~/.claude/skills/` 里 → 14 个同名 skill 全报 `col
 ```bash
 cd packages/coding-agent
 ../../node_modules/.bin/tsgo -p tsconfig.examples.json   # subagent 文件 0 新增 error（2 个预存 error 在 registerAgentSlashCommands，与本改动无关）
+../../node_modules/.bin/vitest --run test/subagent-model.test.ts   # 6/6 通过
 ```
 
 #### 验证（行为）
