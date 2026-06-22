@@ -40,13 +40,23 @@ const PREFERRED_MODEL_ID = "glm-5.2";
 
 /**
  * Resolve the model to dispatch a subagent with.
- * Returns glm-5.2 when it is available (any provider, auth configured),
- * otherwise undefined (caller falls back to the agent's own model).
+ * Returns glm-5.2 only when it is available under the provider that will be
+ * injected into the child (`defaultProvider`, from settings.json). The child's
+ * model resolver is pinned to that provider via `--provider`, so preferring a
+ * glm-5.2 that lives under a different provider would make the child send a
+ * model the pinned provider cannot serve (a fake buildFallbackModel with the
+ * wrong baseUrl). When `defaultProvider` is unknown or glm-5.2 is not available
+ * under it, returns undefined so the caller falls back to the agent's own model.
  */
-function resolvePreferredModel(modelRegistry: ModelRegistry | undefined): string | undefined {
-	if (!modelRegistry) return undefined;
+function resolvePreferredModel(
+	modelRegistry: ModelRegistry | undefined,
+	defaultProvider: string | undefined,
+): string | undefined {
+	if (!modelRegistry || !defaultProvider) return undefined;
 	const available = modelRegistry.getAvailable();
-	return available.some((m) => m.id === PREFERRED_MODEL_ID) ? PREFERRED_MODEL_ID : undefined;
+	return available.some((m) => m.id === PREFERRED_MODEL_ID && m.provider === defaultProvider)
+		? PREFERRED_MODEL_ID
+		: undefined;
 }
 
 const MAX_PARALLEL_TASKS = 8;
@@ -311,26 +321,30 @@ async function runSingleAgent(
 		};
 	}
 
-	// [FEAT-008] Prefer glm-5.2 for every subagent when it is available,
-	// overriding the agent file's `model` frontmatter. Falls back to the
-	// agent-specified model only when glm-5.2 is not usable.
-	const preferredModel = resolvePreferredModel(modelRegistry);
-	const modelToUse = preferredModel ?? agent.model;
-
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (modelToUse) args.push("--model", modelToUse);
-	// [freecode-web-submodule fork patch]
-	// 注入 default provider(从 settings.json 读),避免子进程 model resolver
-	// fallthrough 到无认证的内置 provider 导致 401。
-	// 与 web server BuildPiArgs_ 的 --provider neolix 处理同源问题。
+	// [FEAT-008 + fork provider patch] Read the default provider once from
+	// settings.json. It is used both to resolve the preferred model (glm-5.2 is
+	// only preferred when available under THIS provider) and to inject
+	// `--provider` into the child so its model resolver is pinned correctly.
+	// Avoids the child sending a model the pinned provider cannot serve.
+	let defaultProvider: string | undefined;
 	try {
 		const _settingsPath = path.join(getAgentDir(), "settings.json");
 		const _raw = fs.readFileSync(_settingsPath, "utf-8");
 		const _defaultProvider = JSON.parse(_raw).defaultProvider;
 		if (_defaultProvider && typeof _defaultProvider === "string") {
-			args.push("--provider", _defaultProvider);
+			defaultProvider = _defaultProvider;
 		}
 	} catch {}
+
+	// Prefer glm-5.2 for every subagent when it is available under the default
+	// provider, overriding the agent file's `model` frontmatter. Falls back to
+	// the agent-specified model when glm-5.2 is not usable.
+	const preferredModel = resolvePreferredModel(modelRegistry, defaultProvider);
+	const modelToUse = preferredModel ?? agent.model;
+
+	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	if (modelToUse) args.push("--model", modelToUse);
+	if (defaultProvider) args.push("--provider", defaultProvider);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
