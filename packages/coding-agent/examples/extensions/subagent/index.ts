@@ -24,11 +24,41 @@ import {
 	type ExtensionAPI,
 	getAgentDir,
 	getMarkdownTheme,
+	type ModelRegistry,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+
+/**
+ * Preferred subagent model: if available (auth configured), every subagent is
+ * dispatched with this model, overriding the agent file's `model` frontmatter.
+ * Falls back to the agent-specified model when glm-5.2 is unavailable.
+ */
+// Exported for unit tests (see test/subagent-model.test.ts).
+export const PREFERRED_MODEL_ID = "glm-5.2";
+
+/**
+ * Resolve the model to dispatch a subagent with.
+ * Returns glm-5.2 only when it is available under the provider that will be
+ * injected into the child (`defaultProvider`, from settings.json). The child's
+ * model resolver is pinned to that provider via `--provider`, so preferring a
+ * glm-5.2 that lives under a different provider would make the child send a
+ * model the pinned provider cannot serve (a fake buildFallbackModel with the
+ * wrong baseUrl). When `defaultProvider` is unknown or glm-5.2 is not available
+ * under it, returns undefined so the caller falls back to the agent's own model.
+ */
+export function resolvePreferredModel(
+	modelRegistry: ModelRegistry | undefined,
+	defaultProvider: string | undefined,
+): string | undefined {
+	if (!modelRegistry || !defaultProvider) return undefined;
+	const available = modelRegistry.getAvailable();
+	return available.some((m) => m.id === PREFERRED_MODEL_ID && m.provider === defaultProvider)
+		? PREFERRED_MODEL_ID
+		: undefined;
+}
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -274,6 +304,8 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	modelRegistry: ModelRegistry | undefined,
+	sessionModel: { provider: string; id: string } | undefined,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -291,8 +323,35 @@ async function runSingleAgent(
 		};
 	}
 
+	// [FEAT-008 + fork provider patch] Read the default provider once from
+	// settings.json. It is used both to resolve the preferred model (glm-5.2 is
+	// only preferred when available under THIS provider) and to inject
+	// `--provider` into the child so its model resolver is pinned correctly.
+	// Avoids the child sending a model the pinned provider cannot serve.
+	let defaultProvider: string | undefined;
+	try {
+		const _settingsPath = path.join(getAgentDir(), "settings.json");
+		const _raw = fs.readFileSync(_settingsPath, "utf-8");
+		const _defaultProvider = JSON.parse(_raw).defaultProvider;
+		if (_defaultProvider && typeof _defaultProvider === "string") {
+			defaultProvider = _defaultProvider;
+		}
+	} catch {}
+
+	// Prefer glm-5.2 for every subagent when it is available under the default
+	// provider, overriding the agent file's `model` frontmatter. Falls back to
+	// the agent-specified model when glm-5.2 is not usable.
+	const preferredModel = resolvePreferredModel(modelRegistry, defaultProvider);
+	// `model: inherit` in an agent file means "use the parent session's model".
+	// The child pi does not resolve the bare token `inherit`, so expand it here
+	// into the canonical `provider/modelId` the child's --model understands.
+	const inheritedModel =
+		agent.model === "inherit" && sessionModel ? `${sessionModel.provider}/${sessionModel.id}` : undefined;
+	const modelToUse = preferredModel ?? inheritedModel ?? agent.model;
+
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
+	if (modelToUse) args.push("--model", modelToUse);
+	if (defaultProvider) args.push("--provider", defaultProvider);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
@@ -306,7 +365,7 @@ async function runSingleAgent(
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
+		model: modelToUse,
 		step,
 	};
 
@@ -560,6 +619,8 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						ctx.modelRegistry,
+						ctx.model,
 					);
 					results.push(result);
 
@@ -638,6 +699,8 @@ export default function (pi: ExtensionAPI) {
 							}
 						},
 						makeDetails("parallel"),
+						ctx.modelRegistry,
+						ctx.model,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -674,6 +737,8 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					ctx.modelRegistry,
+					ctx.model,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {
@@ -1077,6 +1142,8 @@ function registerAgentSlashCommands(pi: ExtensionAPI): void {
 					undefined,
 					undefined,
 					makeDetails,
+					ctx.modelRegistry,
+					ctx.model,
 				);
 
 				if (isFailedResult(result)) {
