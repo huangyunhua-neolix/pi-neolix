@@ -440,6 +440,53 @@ skill 也在用户级 `~/.claude/skills/` 里 → 14 个同名 skill 全报 `col
 
 ---
 
+### FEAT-008 - subagent 派发优先使用 glm-5.2
+
+**状态**: 已实现 · **日期**: 2026-06-22 · **动机**: subagent（`subagent` extension）派发的子进程默认用 agent 文件 frontmatter 里的 `model`（scout=haiku、planner/reviewer/worker=sonnet）。本机主力模型是 neolix provider 下的 `glm-5.2`（contextWindow 1000000、便宜），希望 subagent 统一走 glm-5.2，省 token、省成本、并统一模型行为。glm-5.2 不可用时回退 agent 指定的 model，不硬性依赖。
+
+#### 设计（方案 A：强制覆盖）
+
+在 `runSingleAgent` 决定子进程 `--model` 时，先经 `resolvePreferredModel(modelRegistry)` 判断 glm-5.2 是否「可用」（任一 provider 下存在且认证已配置，即 `modelRegistry.getAvailable()` 里 id===`glm-5.2`）。
+
+- 可用 → 一律 `--model glm-5.2`，**忽略** agent 文件 frontmatter 的 `model`。
+- 不可用 → 回退 `agent.model`（原行为）。
+
+「可用性」判断在父进程 extension 层完成：`execute` 的 `ctx` 是 `ExtensionContext`，直接暴露 `ctx.modelRegistry`（`ExtensionCommandContext extends ExtensionContext`，所以 `/agent:<name>` slash command 的 handler 也能拿到）。子进程收到 `--model glm-5.2 --provider neolix`（provider 由本 FEAT 一并注入的 provider patch 提供），`resolveCliModel` 用 `buildFallbackModel` 在 neolix 下匹配，不会因跨 provider 同名（zai-coding-cn 等也有 glm-5.2）而 ambiguous。
+
+#### 改动文件
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `packages/coding-agent/examples/extensions/subagent/index.ts` | 修改 | (1) 新增 `PREFERRED_MODEL_ID="glm-5.2"` + `resolvePreferredModel(modelRegistry)`；(2) `runSingleAgent` 加参数 `modelRegistry`，决定 `--model` 时优先 glm-5.2，`currentResult.model` 记录实际使用的 model；(3) 4 个调用点（single/parallel/chain + slash-command）传入 `ctx.modelRegistry`；(4) 一并补上「注入 default provider」fork patch（读 `~/.pi/agent/settings.json` 的 `defaultProvider`，注入 `--provider`，避免子进程 model resolver fallthrough 到无认证内置 provider 导致 401）——此前只存在于本机 `~/.pi/agent/extensions/subagent/index.ts`，现统一进 examples。 |
+| `~/.pi/agent/extensions/subagent/index.ts`（本机，非 git） | 修改 | 同上逻辑同步到本机运行副本，立即生效。本机副本是旧版（缺 `/agent:<name>` slash command 注册），本次只加 glm-5.2 优先 + provider patch，不补 slash command（避免扩大范围）。 |
+
+#### 范围说明
+
+- **仅模型选择**：不改 agent 的 tools、system prompt、执行流程。
+- **不缓存**：每次派发都重新调 `getAvailable()`，模型增删/认证变化立即生效。
+- **本机副本与 examples 的已知差异**：本机缺 `registerAgentSlashCommands`（旧版拷贝遗留），不影响 subagent 工具本身；如需补齐，后续另开 FEAT。
+
+#### 冲突处理
+
+- **`runSingleAgent` 签名被 upstream 重写** → 重新加 `modelRegistry: ModelRegistry \| undefined` 参数，并在 `--model` 决定处恢复 `resolvePreferredModel` 优先逻辑。
+- **`ExtensionContext.modelRegistry` 被改名/移除** → 改用等价 API（如 `ctx.modelRegistry.getAvailable()`）；该字段定义在 `packages/coding-agent/src/core/extensions/types.ts` 的 `ExtensionContext`。
+- **`getAvailable()` 语义变化** → `resolvePreferredModel` 改用 `find(provider, id)` + `hasConfiguredAuth()` 显式判断（本机 neolix provider 下有 glm-5.2）。
+- **provider 注入 patch 被覆盖** → 在 `--model` 注入之后、`--tools` 之前重新插入读 settings.json 的 `--provider` 块。
+- **本机副本 `~/.pi/agent/extensions/subagent/index.ts` 被重装覆盖** → 从 examples（本 FEAT 后）重新拷贝；注意本机副本不含 slash command，拷贝后若要 slash command 需用 examples 完整版。
+
+#### 测试
+
+```bash
+cd packages/coding-agent
+../../node_modules/.bin/tsgo -p tsconfig.examples.json   # subagent 文件 0 新增 error（2 个预存 error 在 registerAgentSlashCommands，与本改动无关）
+```
+
+#### 验证（行为）
+
+派发任意 subagent（如 `subagent { agent: "scout", task: "..." }`），子进程实际用的 model 应为 `glm-5.2`（neolix），而非 agent 文件里写的 `claude-haiku-4-5`。可用临时脚本确认 `resolvePreferredModel` 在本机返回 `"glm-5.2"`（neolix 下已配置）。
+
+---
+
 ## 模板:新增 fork feature 时照此填写
 
 ```
