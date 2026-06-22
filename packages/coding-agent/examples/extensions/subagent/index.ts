@@ -24,11 +24,30 @@ import {
 	type ExtensionAPI,
 	getAgentDir,
 	getMarkdownTheme,
+	type ModelRegistry,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+
+/**
+ * Preferred subagent model: if available (auth configured), every subagent is
+ * dispatched with this model, overriding the agent file's `model` frontmatter.
+ * Falls back to the agent-specified model when glm-5.2 is unavailable.
+ */
+const PREFERRED_MODEL_ID = "glm-5.2";
+
+/**
+ * Resolve the model to dispatch a subagent with.
+ * Returns glm-5.2 when it is available (any provider, auth configured),
+ * otherwise undefined (caller falls back to the agent's own model).
+ */
+function resolvePreferredModel(modelRegistry: ModelRegistry | undefined): string | undefined {
+	if (!modelRegistry) return undefined;
+	const available = modelRegistry.getAvailable();
+	return available.some((m) => m.id === PREFERRED_MODEL_ID) ? PREFERRED_MODEL_ID : undefined;
+}
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -274,6 +293,7 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	modelRegistry: ModelRegistry | undefined,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -291,8 +311,26 @@ async function runSingleAgent(
 		};
 	}
 
+	// [FEAT-008] Prefer glm-5.2 for every subagent when it is available,
+	// overriding the agent file's `model` frontmatter. Falls back to the
+	// agent-specified model only when glm-5.2 is not usable.
+	const preferredModel = resolvePreferredModel(modelRegistry);
+	const modelToUse = preferredModel ?? agent.model;
+
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
+	if (modelToUse) args.push("--model", modelToUse);
+	// [freecode-web-submodule fork patch]
+	// 注入 default provider(从 settings.json 读),避免子进程 model resolver
+	// fallthrough 到无认证的内置 provider 导致 401。
+	// 与 web server BuildPiArgs_ 的 --provider neolix 处理同源问题。
+	try {
+		const _settingsPath = path.join(getAgentDir(), "settings.json");
+		const _raw = fs.readFileSync(_settingsPath, "utf-8");
+		const _defaultProvider = JSON.parse(_raw).defaultProvider;
+		if (_defaultProvider && typeof _defaultProvider === "string") {
+			args.push("--provider", _defaultProvider);
+		}
+	} catch {}
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
@@ -306,7 +344,7 @@ async function runSingleAgent(
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
+		model: modelToUse,
 		step,
 	};
 
@@ -560,6 +598,7 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						ctx.modelRegistry,
 					);
 					results.push(result);
 
@@ -638,6 +677,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						},
 						makeDetails("parallel"),
+						ctx.modelRegistry,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -674,6 +714,7 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					ctx.modelRegistry,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {
@@ -1077,6 +1118,7 @@ function registerAgentSlashCommands(pi: ExtensionAPI): void {
 					undefined,
 					undefined,
 					makeDetails,
+					ctx.modelRegistry,
 				);
 
 				if (isFailedResult(result)) {
