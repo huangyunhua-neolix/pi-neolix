@@ -7,7 +7,9 @@
 >
 > - **Fork 仓库**: `huangyunhua-neolix/pi-neolix`
 > - **Upstream**: pi 官方仓库(分支 `main`)
-> - **当前 fork 基线**: `7a14325b` (feat(tui): detect Warp terminal and enable Kitty image protocol (#5841), 2026-06-18)
+> - **当前 fork 基线**: `f7d3331d` (fix(ai): mock copilot models in oauth test, 2026-06-22 upstream/main)
+>   - 上次同步: 2026-06-23,rebase 86 个 upstream 提交(Models API 重构 phase 1-8、overflow compaction 修复、安全更新等)。
+>   - 同步前基线: `7a14325b` (2026-06-18)。
 
 ---
 
@@ -23,6 +25,13 @@
    - `packages/coding-agent/src/core/claude-plugins.ts` - **新增文件**(FEAT-003),upstream 不会有同名冲突。
 4. 同步后跑 `npm run check`(coding-agent)和 `web-bridge` 的单测,确认改动仍生效。
 5. 如果 fork feature 已被 upstream 以等价方式实现,删除本文件对应章节并改为引用 upstream 实现。
+6. **2026-06-23 同步备注**(本次 rebase 实际冲突 / 取代情况):
+   - `resource-loader.ts` `reload()` 开头:upstream 新增 `if (this.loaded) clearExtensionCache();`,fork 的 FEAT-003 plugin 发现块也在同位置。解法:**两者并存**(先清缓存、再发现插件路径),已合并。
+   - `packages/agent/src/harness/compaction/branch-summarization.ts`:upstream Models 重构把 `generateBranchSummary` 的解构从 `apiKey, headers` 改为 `models`(phase 6)。fork 的 `contextWindow || 200000` 改动紧邻。解法:**取 upstream 的 `models` 解构 + 保留 fork 的 200k 回退值**。
+   - **已被 upstream 取代的游离提交**(未在本文件单独记录,本次 rebase 后 redundant-but-harmless,保留):
+     - `94cecf3b` strip overflow assistant regardless of stopReason —— upstream `6b9f3f49`(closes #5720)`willRetry = stopReason !== "stop"` 以更优方式修复同一 "Cannot continue from assistant" bug。fork 的 strip-any 块现冗余但无害,21/21 compaction 测试仍绿。下次清理可删除该提交。
+     - `26f91520` preserve overflow-recovery guard —— upstream 未触及该区域,仍独立有效,保留。
+   - **upstream 既存 build 缺陷**(rebase 被动继承,非 fork 引入):`packages/ai/src/api/mistral-conversations.ts:258` 用 `payload.promptCacheKey`,但 `openai@6.26.0`(upstream 自己也钉此版本)的 `ChatCompletionStreamRequest` 类型无此字段。upstream CI 是否真绿待核;fork 侧暂不处理,跟踪 upstream 修复。
 
 > 数据文件不算自定义改动:`packages/ai/src/models.generated.ts`、
 > `packages/ai/src/image-models.generated.ts` 跟随 upstream 重新生成即可
