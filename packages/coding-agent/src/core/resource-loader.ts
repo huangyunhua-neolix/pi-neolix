@@ -11,7 +11,12 @@ export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { discoverClaudePluginPaths } from "./claude-plugins.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
-import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.ts";
+import {
+	clearExtensionCache,
+	createExtensionRuntime,
+	loadExtensionFromFactory,
+	loadExtensionsCached,
+} from "./extensions/loader.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
@@ -181,6 +186,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
+	// Plugin-discovered paths (FEAT-003). Re-derived fresh on every reload() so an
+	// uninstalled plugin does not linger in additionalSkillPaths for the session,
+	// and a path that appears between reloads is picked up cleanly. Kept separate
+	// from the constructor-provided additional*Paths (which are user-supplied and
+	// must not be mutated) and merged at consumption time in loadCurrentSkillSet.
+	private pluginSkillPaths: string[] = [];
+	private pluginPromptPaths: string[] = [];
 	private extensionFactories: ExtensionFactory[];
 	private noExtensions: boolean;
 	private noSkills: boolean;
@@ -224,6 +236,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private extensionThemeSourceInfos: Map<string, SourceInfo>;
 	private lastPromptPaths: string[];
 	private lastThemePaths: string[];
+	private loaded: boolean;
 
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
@@ -270,6 +283,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionThemeSourceInfos = new Map();
 		this.lastPromptPaths = [];
 		this.lastThemePaths = [];
+		this.loaded = false;
 	}
 
 	getExtensions(): LoadExtensionsResult {
@@ -349,22 +363,24 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
+		if (this.loaded) {
+			clearExtensionCache();
+		}
+
 		// FEAT-003 (freecode-web adapter): pull skills + prompt-style commands from
 		// Claude Code / freecode plugins installed via freecode CLI (e.g. superpowers,
-		// ralph-loop). Discovery only — pi never installs/updates plugins. Merged
-		// here so both the bootstrap pass and normal reloads see them. Gated on
-		// noSkills/noPromptTemplates so those opt-outs keep their original semantics
-		// (no skill/prompt discovery at all, including from plugins).
+		// ralph-loop). Discovery only — pi never installs/updates plugins. Re-derived
+		// fresh each reload (NOT merged into the constructor-provided additional*Paths,
+		// which would accumulate stale paths across reloads and resist plugin
+		// removal). Gated on noSkills/noPromptTemplates so those opt-outs keep their
+		// original semantics (no skill/prompt discovery at all, including from plugins).
 		const claudePlugins = discoverClaudePluginPaths();
-		if (!this.noSkills && claudePlugins.skillPaths.length > 0) {
-			this.additionalSkillPaths = this.mergePaths(this.additionalSkillPaths, claudePlugins.skillPaths);
-		}
-		if (!this.noPromptTemplates && claudePlugins.promptPaths.length > 0) {
-			this.additionalPromptTemplatePaths = this.mergePaths(
-				this.additionalPromptTemplatePaths,
-				claudePlugins.promptPaths,
-			);
-		}
+		this.pluginSkillPaths =
+			!this.noSkills && claudePlugins.skillPaths.length > 0 ? claudePlugins.skillPaths : [];
+		this.pluginPromptPaths =
+			!this.noPromptTemplates && claudePlugins.promptPaths.length > 0
+				? claudePlugins.promptPaths
+				: [];
 		let preTrustExtensions: LoadExtensionsResult | undefined;
 		if (options?.resolveProjectTrust) {
 			preTrustExtensions = await this.loadProjectTrustExtensions();
@@ -437,8 +453,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
 
 		const skillPaths = this.noSkills
-			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
-			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
+			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths, this.pluginSkillPaths)
+			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths, this.pluginSkillPaths);
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
@@ -452,8 +468,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		const promptPaths = this.noPromptTemplates
-			? this.mergePaths(cliEnabledPrompts, this.additionalPromptTemplatePaths)
-			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths);
+			? this.mergePaths(cliEnabledPrompts, this.additionalPromptTemplatePaths, this.pluginPromptPaths)
+			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths, this.pluginPromptPaths);
 
 		this.lastPromptPaths = promptPaths;
 		this.updatePromptsFromPaths(promptPaths, metadataByPath);
@@ -509,6 +525,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = this.appendSystemPromptOverride
 			? this.appendSystemPromptOverride(baseAppend)
 			: baseAppend;
+		this.loaded = true;
 	}
 
 	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {
@@ -521,7 +538,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
-		const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus);
+		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
 		}
@@ -541,7 +558,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		preTrustExtensions: LoadExtensionsResult | undefined,
 	): Promise<LoadExtensionsResult> {
 		if (!preTrustExtensions) {
-			const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus);
+			const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
 			const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime);
 			extensionsResult.extensions.push(...inlineExtensions.extensions);
 			extensionsResult.errors.push(...inlineExtensions.errors);
@@ -561,7 +578,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			const resolvedPath = this.resolveExtensionLoadPath(path);
 			return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
 		});
-		const remainingExtensions = await loadExtensions(
+		const remainingExtensions = await loadExtensionsCached(
 			remainingPaths,
 			this.cwd,
 			this.eventBus,
@@ -808,11 +825,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 		};
 	}
 
-	private mergePaths(primary: string[], additional: string[]): string[] {
+	private mergePaths(primary: string[], ...additional: string[][]): string[] {
 		const merged: string[] = [];
 		const seen = new Set<string>();
 
-		for (const p of [...primary, ...additional]) {
+		for (const p of [primary, ...additional].flat()) {
 			const resolved = this.resolveResourcePath(p);
 			const canonicalPath = canonicalizePath(resolved);
 			if (seen.has(canonicalPath)) continue;

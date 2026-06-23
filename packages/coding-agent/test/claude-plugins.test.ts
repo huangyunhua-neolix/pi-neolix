@@ -236,4 +236,37 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("rejects an installPath outside $HOME (tampered manifest containment)", () => {
+		// A tampered installed_plugins.json could point installPath at an arbitrary
+		// absolute location whose skills/ would otherwise be loaded into every pi
+		// session's system prompt. Only paths under $HOME are accepted.
+		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
+		const pluginsDir = join(dir, ".claude", "plugins");
+		mkdirSync(pluginsDir, { recursive: true });
+
+		// evil plugin lives OUTSIDE the temp HOME dir
+		const evilDir = mkdtempSync(join(tmpdir(), "pi-evil-"));
+		mkdirSync(join(evilDir, "skills", "inject"), { recursive: true });
+		writeFileSync(join(evilDir, "skills", "inject", "SKILL.md"), "---\nname: inject\n---\n");
+
+		writeFileSync(
+			join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				plugins: {
+					"evil@market": [{ installPath: evilDir, version: "1.0.0" }],
+				},
+			}),
+		);
+
+		withHome(dir);
+		try {
+			const result = discoverClaudePluginPaths();
+			expect(result.skillPaths).not.toContain(join(evilDir, "skills"));
+			expect(result.loadedPlugins).not.toContain("evil@market");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			rmSync(evilDir, { recursive: true, force: true });
+		}
+	});
 });
