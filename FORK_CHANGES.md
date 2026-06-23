@@ -31,7 +31,7 @@
    - **已被 upstream 取代的游离提交**(未在本文件单独记录,本次 rebase 后 redundant-but-harmless,保留):
      - `94cecf3b` strip overflow assistant regardless of stopReason —— upstream `6b9f3f49`(closes #5720)`willRetry = stopReason !== "stop"` 以更优方式修复同一 "Cannot continue from assistant" bug。fork 的 strip-any 块现冗余但无害,21/21 compaction 测试仍绿。下次清理可删除该提交。
      - `26f91520` preserve overflow-recovery guard —— upstream 未触及该区域,仍独立有效,保留。
-   - **upstream 既存 build 缺陷**(rebase 被动继承,非 fork 引入):`packages/ai/src/api/mistral-conversations.ts:258` 用 `payload.promptCacheKey`,但 `openai@6.26.0`(upstream 自己也钉此版本)的 `ChatCompletionStreamRequest` 类型无此字段。upstream CI 是否真绿待核;fork 侧暂不处理,跟踪 upstream 修复。
+   - 本次同步发现的 2 个 upstream 既存问题已记入下文「已知问题(upstream-inherited)」章节跟踪。
 
 > 数据文件不算自定义改动:`packages/ai/src/models.generated.ts`、
 > `packages/ai/src/image-models.generated.ts` 跟随 upstream 重新生成即可
@@ -42,6 +42,31 @@
 ---
 
 ## 改动清单
+
+## 已知问题(upstream-inherited,待跟踪)
+
+> 以下问题均**非 fork 引入**,而是 upstream `f7d3331d` 自身在 `openai@6.26.0` + 当前依赖环境下的既存缺陷,rebase 后被动继承。fork 侧暂不修(避免与 upstream 分叉),跟踪 upstream 修复后随同步纳入。
+
+### 已知-1 · pi-ai build 失败:`mistral-conversations.ts` `promptCacheKey` 类型错误
+
+- **现象**: `npm run build`(packages/ai)报 `src/api/mistral-conversations.ts(258,47): error TS2339: Property 'promptCacheKey' does not exist on type 'ChatCompletionStreamRequest'.`,pi-ai dist 无法重新生成。
+- **根因**: upstream `651d10d9`(feat(ai): enable Mistral prompt caching)在 `mistral-conversations.ts:258` 写 `payload.promptCacheKey = options.sessionId;`,`payload` 类型为 `ChatCompletionStreamRequest`。但 `openai@6.26.0`(upstream `packages/ai/package.json` 钉此版本,无 `overrides`)的该类型无 `promptCacheKey` 字段。`skipLibCheck` 管不到(是源码赋值,非 `.d.ts`)。
+- **证据**: fork main(rebase 前)pi-ai build 成功(无此代码);rebase 后被动继承;`git diff upstream/main HEAD -- packages/ai/src/api/mistral-conversations.ts` 为空(fork 未改此文件)。
+- **影响**: pi-ai dist 不能重建 → 目前用 fork main 旧 dist 凑合运行,新模型/Provider 改动无法生效。
+- **处置**: fork 侧不动。跟踪 upstream 修复(可能需升 `openai` 到含该字段的版本,或 upstream 改用类型断言/扩展)。upstream 修复后随下次 rebase 自动纳入。
+
+### 已知-2 · `resource-loader.test.ts` 5 个扩展加载测试失败
+
+- **现象**: `npx vitest run test/resource-loader.test.ts` 报 `5 failed | 17 passed (22)`。失败用例均为 upstream 既有测试:
+  - `should load symlinked user and project extensions once`
+  - `should load user extensions before trust and reuse them after trust resolves`
+  - `should keep both extensions loaded when command names collide`
+  - `should detect tool conflicts between extensions`
+  - `should prefer explicit CLI extensions over discovered extensions when commands and tools conflict`
+- **根因**: upstream `5505316e`(fix(coding-agent): cache extension imports for session switches)引入 `loadExtensionsCached` + 模块级缓存 + `clearExtensionCache()`(仅 `if (this.loaded)` 时清)。vitest 单进程跨用例共享该模块级缓存,首个用例的 `this.loaded=false` 不清缓存,导致后续用例读到陈旧缓存 → 扩展加载结果为空 / 冲突检测失效。
+- **证据**: **upstream/main 纯净版**(独立 worktree,同一 node_modules)同样 `5 failed | 17 passed`,失败用例完全相同。fork main(rebase 前)因仍用未缓存的 `loadExtensions` 而 22/22 全过。
+- **影响**: 仅测试隔离问题,不影响 fork 自身功能;但 `npm run check` / CI 会红。
+- **处置**: fork 侧不动。若 upstream 未修且需让 CI 绿,可在 vitest 配置层给该文件加 `pool: 'forks'` 或按用例 `clearExtensionCache()`(属 upstream 测试基础设施,不在 fork 改动范围)。
 
 ### FEAT-001 - Web Adapter 信号桥(OSC 9998 / 9999)
 
