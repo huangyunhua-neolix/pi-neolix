@@ -286,7 +286,7 @@ To merge custom models into a built-in provider, include the `models` array:
 Merge semantics:
 - Built-in models are kept.
 - Custom models are upserted by `id` within the provider.
-- If a custom model `id` matches a built-in model `id`, the custom model replaces that built-in model.
+- If a custom model `id` matches a built-in model `id`, the built-in wins on **capability fields** (`contextWindow`, `maxTokens`, `cost`, `reasoning`, `input`, `thinkingLevelMap`) and the custom model only overrides **connection fields** (`baseUrl`, `headers`, `compat`). This prevents a name-only local entry from clobbering a built-in's correct context window (e.g. glm-5.2's 1M context). To override capability fields on a built-in model, use [Per-model Overrides](#per-model-overrides) instead.
 - If a custom model `id` is new, it is added alongside built-in models.
 
 ## Per-model Overrides
