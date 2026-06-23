@@ -343,7 +343,10 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		(model.api === "openai-completions" || model.provider === "opencode-go") &&
+		model.id.includes("deepseek-v4")
+	) {
 		mergeThinkingLevelMap(
 			model,
 			model.provider === "openrouter"

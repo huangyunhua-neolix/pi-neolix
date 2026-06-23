@@ -11,6 +11,7 @@ export const OPENCODE_GO_MODELS = {
 		provider: "opencode-go",
 		baseUrl: "https://claude.neolix.ai",
 		reasoning: true,
+		thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
 		input: ["text"],
 		cost: {
 			input: 0.14,
@@ -28,6 +29,7 @@ export const OPENCODE_GO_MODELS = {
 		provider: "opencode-go",
 		baseUrl: "https://claude.neolix.ai",
 		reasoning: true,
+		thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
 		input: ["text"],
 		cost: {
 			input: 1.74,
