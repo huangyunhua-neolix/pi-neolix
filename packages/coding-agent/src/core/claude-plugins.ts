@@ -21,7 +21,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
 
 /** Root of the freecode/Claude Code plugin store, normally `~/.claude`. */
@@ -94,13 +94,27 @@ export function discoverClaudePluginPaths(): ClaudePluginPaths {
 				if (!existsSync(installPath)) {
 					continue;
 				}
+				// Defense in depth: only accept plugin install paths under the user's home
+				// directory. A tampered installed_plugins.json could otherwise point
+				// installPath at an arbitrary absolute location (e.g. /tmp/evil or /etc/...)
+				// whose skills/ would be loaded into every pi session's system prompt.
+				// Plugins legitimately live somewhere under $HOME (under ~/.claude, a
+				// project dir, etc.), so bounding to $HOME rejects truly external paths
+				// while keeping all real install locations.
+				const home = homedir();
+				const resolvedInstall = resolvePath(installPath);
+				if (home && resolvedInstall !== home && !resolvedInstall.startsWith(home + sep)) {
+					continue;
+				}
 				// Skip the plugin cache directory. Claude Code installs plugins into
 				// `~/.claude/plugins/cache/<publisher>/<plugin>/<version>/`, and those
 				// same skills are mirrored at the user level (`~/.claude/skills/`).
 				// Loading both creates 14+ "collision" diagnostics for superpowers
 				// skills (brainstorming, test-driven-development, ...). The user-level
 				// copies are the trusted source, so we ignore the cache entirely.
-				const normalizedInstall = installPath.replace(/\\/g, "/");
+				// Case-insensitive: macOS HFS+ is case-insensitive, so /Plugins/CACHE/
+				// would evade a case-sensitive check and re-introduce the collisions.
+				const normalizedInstall = installPath.replace(/\\/g, "/").toLowerCase();
 				if (normalizedInstall.includes("/plugins/cache/")) {
 					continue;
 				}

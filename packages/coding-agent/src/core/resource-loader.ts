@@ -186,6 +186,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
+	// Plugin-discovered paths (FEAT-003). Re-derived fresh on every reload() so an
+	// uninstalled plugin does not linger in additionalSkillPaths for the session,
+	// and a path that appears between reloads is picked up cleanly. Kept separate
+	// from the constructor-provided additional*Paths (which are user-supplied and
+	// must not be mutated) and merged at consumption time in loadCurrentSkillSet.
+	private pluginSkillPaths: string[] = [];
+	private pluginPromptPaths: string[] = [];
 	private extensionFactories: ExtensionFactory[];
 	private noExtensions: boolean;
 	private noSkills: boolean;
@@ -362,20 +369,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		// FEAT-003 (freecode-web adapter): pull skills + prompt-style commands from
 		// Claude Code / freecode plugins installed via freecode CLI (e.g. superpowers,
-		// ralph-loop). Discovery only — pi never installs/updates plugins. Merged
-		// here so both the bootstrap pass and normal reloads see them. Gated on
-		// noSkills/noPromptTemplates so those opt-outs keep their original semantics
-		// (no skill/prompt discovery at all, including from plugins).
+		// ralph-loop). Discovery only — pi never installs/updates plugins. Re-derived
+		// fresh each reload (NOT merged into the constructor-provided additional*Paths,
+		// which would accumulate stale paths across reloads and resist plugin
+		// removal). Gated on noSkills/noPromptTemplates so those opt-outs keep their
+		// original semantics (no skill/prompt discovery at all, including from plugins).
 		const claudePlugins = discoverClaudePluginPaths();
-		if (!this.noSkills && claudePlugins.skillPaths.length > 0) {
-			this.additionalSkillPaths = this.mergePaths(this.additionalSkillPaths, claudePlugins.skillPaths);
-		}
-		if (!this.noPromptTemplates && claudePlugins.promptPaths.length > 0) {
-			this.additionalPromptTemplatePaths = this.mergePaths(
-				this.additionalPromptTemplatePaths,
-				claudePlugins.promptPaths,
-			);
-		}
+		this.pluginSkillPaths =
+			!this.noSkills && claudePlugins.skillPaths.length > 0 ? claudePlugins.skillPaths : [];
+		this.pluginPromptPaths =
+			!this.noPromptTemplates && claudePlugins.promptPaths.length > 0
+				? claudePlugins.promptPaths
+				: [];
 		let preTrustExtensions: LoadExtensionsResult | undefined;
 		if (options?.resolveProjectTrust) {
 			preTrustExtensions = await this.loadProjectTrustExtensions();
@@ -448,8 +453,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
 
 		const skillPaths = this.noSkills
-			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
-			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
+			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths, this.pluginSkillPaths)
+			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths, this.pluginSkillPaths);
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
@@ -463,8 +468,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		const promptPaths = this.noPromptTemplates
-			? this.mergePaths(cliEnabledPrompts, this.additionalPromptTemplatePaths)
-			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths);
+			? this.mergePaths(cliEnabledPrompts, this.additionalPromptTemplatePaths, this.pluginPromptPaths)
+			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths, this.pluginPromptPaths);
 
 		this.lastPromptPaths = promptPaths;
 		this.updatePromptsFromPaths(promptPaths, metadataByPath);
@@ -820,11 +825,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 		};
 	}
 
-	private mergePaths(primary: string[], additional: string[]): string[] {
+	private mergePaths(primary: string[], ...additional: string[][]): string[] {
 		const merged: string[] = [];
 		const seen = new Set<string>();
 
-		for (const p of [...primary, ...additional]) {
+		for (const p of [primary, ...additional].flat()) {
 			const resolved = this.resolveResourcePath(p);
 			const canonicalPath = canonicalizePath(resolved);
 			if (seen.has(canonicalPath)) continue;

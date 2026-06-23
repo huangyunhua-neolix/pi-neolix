@@ -362,6 +362,49 @@ Content`,
 			expect(agentsFiles.some((f) => f.path.includes("AGENTS.md"))).toBe(true);
 		});
 
+		// FEAT-002 (freecode-web adapter): CLAUDE.md is preferred over AGENTS.md so a
+		// project's CLAUDE.md is honored even when an AGENTS.md sits next to it
+		// (mirrors freecode CLI's memory-loading model). This was a manually-resolved
+		// rebase conflict on resource-loader.ts:loadContextFileFromDir candidate order.
+		it("prefers CLAUDE.md over AGENTS.md when both exist in the same dir", async () => {
+			writeFileSync(join(cwd, "AGENTS.md"), "# AGENTS guidelines");
+			writeFileSync(join(cwd, "CLAUDE.md"), "# Claude guidelines");
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { agentsFiles } = loader.getAgentsFiles();
+			// Exactly one context file for the project dir (the first matching candidate),
+			// and it must be CLAUDE.md — not AGENTS.md.
+			const projectContexts = agentsFiles.filter((f) => f.path.startsWith(cwd));
+			expect(projectContexts.length).toBe(1);
+			expect(projectContexts[0].path.includes("CLAUDE.md")).toBe(true);
+			expect(projectContexts[0].path.includes("AGENTS.md")).toBe(false);
+		});
+
+		// FEAT-002 (freecode-web adapter): also load the user-level ~/.claude/CLAUDE.md
+		// so pi shares the same user instructions as freecode CLI. This was a
+		// manually-resolved rebase conflict on resource-loader.ts:loadProjectContextFiles.
+		it("loads user-level ~/.claude/CLAUDE.md into the system prompt", async () => {
+			// Override HOME so ~/.claude points at a temp user dir distinct from agentDir.
+			const realHome = process.env.HOME;
+			const userHome = join(tempDir, "userhome");
+			mkdirSync(join(userHome, ".claude"), { recursive: true });
+			writeFileSync(join(userHome, ".claude", "CLAUDE.md"), "# User-level memory");
+			process.env.HOME = userHome;
+			try {
+				const loader = new DefaultResourceLoader({ cwd, agentDir });
+				await loader.reload();
+
+				const { agentsFiles } = loader.getAgentsFiles();
+				expect(
+					agentsFiles.some((f) => f.path === join(userHome, ".claude", "CLAUDE.md")),
+				).toBe(true);
+			} finally {
+				process.env.HOME = realHome;
+			}
+		});
+
 		it("should skip AGENTS.md and CLAUDE.md discovery when noContextFiles is true", async () => {
 			writeFileSync(join(cwd, "AGENTS.md"), "# Project Guidelines\n\nBe helpful.");
 			writeFileSync(join(cwd, "CLAUDE.md"), "# Claude Guidelines\n\nBe helpful.");

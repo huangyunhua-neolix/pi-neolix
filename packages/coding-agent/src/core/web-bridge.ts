@@ -55,7 +55,13 @@ export function emitWebStatus(status: "idle" | "running" | "error", bg: number, 
 
 /** Emit an OSC 9999 context/cost frame. `used` may be omitted (post-compaction). */
 export function emitWebContextWindow(used: number | undefined, limit: number, cost: number): void {
-	const parts = [`limit=${limit}`, `cost=${cost}`];
+	// Guard all numeric fields: model.contextWindow or summed cost can be NaN/Infinity
+	// for a malformed model entry or a degenerate usage payload. JS renders those as the
+	// literal strings "NaN"/"Infinity", which corrupt the OSC frame the web PTY parser
+	// consumes. Clamp non-finite values to 0 so the frame stays well-formed.
+	const safeLimit = Number.isFinite(limit) ? limit : 0;
+	const safeCost = Number.isFinite(cost) ? cost : 0;
+	const parts = [`limit=${safeLimit}`, `cost=${safeCost}`];
 	if (used !== undefined && Number.isFinite(used) && used >= 0) {
 		parts.unshift(`used=${used}`);
 	}

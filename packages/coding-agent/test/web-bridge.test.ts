@@ -43,6 +43,14 @@ describe("emitWebStatus / emitWebContextWindow — OSC frame format", () => {
 		emitWebContextWindow(undefined, 200000, 0.5);
 		expect(cap.writes).toEqual(["\x1b]9999;limit=200000;cost=0.5\x07"]);
 	});
+
+	test("emitWebContextWindow clamps non-finite limit/cost to 0", () => {
+		// A malformed model.contextWindow (NaN) or degenerate summed cost (Infinity)
+		// would otherwise render as the literal strings "NaN"/"Infinity" and corrupt
+		// the OSC frame the web PTY parser consumes.
+		emitWebContextWindow(undefined, Number.NaN, Number.POSITIVE_INFINITY);
+		expect(cap.writes).toEqual(["\x1b]9999;limit=0;cost=0\x07"]);
+	});
 });
 
 describe("WebBridge — env gating", () => {
@@ -190,5 +198,35 @@ describe("WebBridge — event → OSC translation", () => {
 		cap.writes.length = 0;
 		emit({ type: "agent_start" });
 		expect(cap.writes).toEqual([]);
+	});
+
+	test("compaction_end → OSC 9999 refresh (cost + limit, used omitted until next response)", () => {
+		// After compaction the live token count is unknown, but cost + limit should
+		// still refresh so the web UI does not show stale figures.
+		const messages = [
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					usage: {
+						input: 500,
+						output: 100,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 600,
+						cost: { total: 0.2 },
+					},
+				},
+			},
+		];
+		const { session, emit } = makeSession(messages);
+		const bridge = new WebBridge();
+		bridge.attach(session as any);
+		cap.writes.length = 0;
+		emit({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false });
+		// A 9999 frame must be emitted; `used` is undefined post-compaction so the
+		// frame carries limit + cost only.
+		expect(cap.writes.some((w) => w.startsWith("\x1b]9999;") && w.includes("limit=200000") && w.includes("cost=0.2"))).toBe(true);
 	});
 });
