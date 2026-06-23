@@ -2,8 +2,9 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { clearExtensionCache } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
@@ -19,6 +20,8 @@ describe("DefaultResourceLoader", () => {
 	let cwd: string;
 
 	beforeEach(() => {
+		clearExtensionCache();
+		vi.resetModules();
 		// FEAT-003: isolate from the real ~/.claude plugin/skill store so
 		// existing reload/diagnostic assertions are not polluted by the host's
 		// installed plugins or ~/.claude/skills. Dedicated plugin tests live in
@@ -33,6 +36,8 @@ describe("DefaultResourceLoader", () => {
 	});
 
 	afterEach(() => {
+		clearExtensionCache();
+		vi.resetModules();
 		rmSync(tempDir, { recursive: true, force: true });
 		process.env.PI_DISABLE_CLAUDE_PLUGINS = prevDisablePlugins;
 	});
@@ -397,9 +402,7 @@ Content`,
 				await loader.reload();
 
 				const { agentsFiles } = loader.getAgentsFiles();
-				expect(
-					agentsFiles.some((f) => f.path === join(userHome, ".claude", "CLAUDE.md")),
-				).toBe(true);
+				expect(agentsFiles.some((f) => f.path === join(userHome, ".claude", "CLAUDE.md"))).toBe(true);
 			} finally {
 				process.env.HOME = realHome;
 			}
