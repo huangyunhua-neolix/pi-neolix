@@ -277,10 +277,18 @@ describe("ModelRegistry", () => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 
-		test("custom model with same id replaces built-in model by id", () => {
+		test("custom model with same id overrides connection fields only (built-in capabilities win)", () => {
+			// IRON RULE: a custom model sharing provider+id with a built-in must NOT
+			// clobber built-in capabilities. Only connection fields (baseUrl)
+			// are honoured (so users can point a built-in model at an internal
+			// proxy). Capability fields (contextWindow/maxTokens/cost/...) stay
+			// verbatim from the built-in source code.
 			writeModelsJson({
 				openrouter: providerConfig(
 					"https://my-proxy.example.com/v1",
+					// Deliberately only id — no contextWindow, no maxTokens, no cost.
+					// Old behaviour replaced the built-in wholesale, dropping
+					// contextWindow to the 200k default. New behaviour keeps 1M.
 					[{ id: "anthropic/claude-sonnet-4" }],
 					"openai-completions",
 				),
@@ -291,7 +299,33 @@ describe("ModelRegistry", () => {
 			const sonnetModels = models.filter((m) => m.id === "anthropic/claude-sonnet-4");
 
 			expect(sonnetModels).toHaveLength(1);
+			// Connection override honoured:
 			expect(sonnetModels[0].baseUrl).toBe("https://my-proxy.example.com/v1");
+			// Capability fields preserved from built-in (NOT reset to defaults):
+			expect(sonnetModels[0].contextWindow).toBe(1000000);
+		});
+
+		test("REGRESSION: glm-5.2 1M context survives a name-only local override", () => {
+			// Real-world bug this guards against: a user's models.json already had
+			// glm-5.2 configured with just an id+name+baseUrl (no contextWindow),
+			// which used to replace the built-in and drop the 1M context to the
+			// 200k default. Built-in opencode glm-5.2 must always win on
+			// contextWindow regardless of what the local file says (or omits).
+			writeModelsJson({
+				opencode: providerConfig(
+					"https://opencode-proxy.example.com/v1",
+					[{ id: "glm-5.2" }],
+					"openai-completions",
+				),
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const models = getModelsForProvider(registry, "opencode");
+			const glm = models.filter((m) => m.id === "glm-5.2");
+
+			expect(glm).toHaveLength(1);
+			expect(glm[0].baseUrl).toBe("https://opencode-proxy.example.com/v1");
+			expect(glm[0].contextWindow).toBe(1000000);
 		});
 
 		test("custom provider with same name as built-in does not affect other built-in providers", () => {

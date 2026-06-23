@@ -459,13 +459,34 @@ export class ModelRegistry {
 		});
 	}
 
-	/** Merge custom models into built-in list by provider+id (custom wins on conflicts). */
+	/** Merge custom models into built-in list by provider+id.
+	 *
+	 *  IRON RULE: the built-in source code is the single source of truth for
+	 *  model CAPABILITIES (contextWindow / maxTokens / cost / reasoning / input /
+	 *  thinkingLevelMap). A user's local models.json can NEVER clobber these —
+	 *  e.g. a hand-written glm-5.2 with only id+name+baseUrl must not drop the
+	 *  built-in 1M contextWindow down to the 200k default.
+	 *
+	 *  When a custom model shares provider+id with a built-in, only its
+	 *  CONNECTION fields (baseUrl / headers / compat) are honoured (so users can
+	 *  point a built-in model at an internal proxy); every capability field is
+	 *  taken from the built-in verbatim. Custom models with no built-in
+	 *  counterpart are appended as-is (fully user-defined).
+	 */
 	private mergeCustomModels(builtInModels: Model<Api>[], customModels: Model<Api>[]): Model<Api>[] {
 		const merged = [...builtInModels];
 		for (const customModel of customModels) {
 			const existingIndex = merged.findIndex((m) => m.provider === customModel.provider && m.id === customModel.id);
 			if (existingIndex >= 0) {
-				merged[existingIndex] = customModel;
+				const base = merged[existingIndex];
+				// Connection-only override: keep built-in capabilities, adopt the
+				// custom connection fields the user actually set.
+				merged[existingIndex] = {
+					...base,
+					baseUrl: customModel.baseUrl ?? base.baseUrl,
+					headers: customModel.headers ?? base.headers,
+					compat: mergeCompat(base.compat, customModel.compat),
+				};
 			} else {
 				merged.push(customModel);
 			}
