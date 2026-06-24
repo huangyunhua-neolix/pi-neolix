@@ -8,9 +8,16 @@
  *   1. Plugins: `~/.claude/plugins/installed_plugins.json` lists each enabled
  *      plugin's installPath; we expose its `skills/` and `commands/` dirs
  *      (e.g. superpowers, ralph-loop).
- *   2. User level: `~/.claude/skills/` and `~/.claude/commands/` — the
- *      freecode/Claude Code user resource roots. This is where compound-
- *      engineering skills (ce-*) and user-defined slash commands live.
+ *   2. User level: `~/.claude/skills/`, `~/.claude/commands/`, and
+ *      `~/.claude/agents/` — the freecode/Claude Code user resource roots.
+ *      This is where compound-engineering skills (ce-*), user-defined slash
+ *      commands, and user-defined subagent definitions live.
+ *
+ * Note on agents: pi has no subagent dispatch machinery, so agent files
+ * (`~/.claude/agents/*.md`) are surfaced as prompt-style templates — typing
+ * `/<agent-name>` injects the agent's system-prompt body into the current
+ * session. This is not a true fork; it is a convenience alias that matches
+ * the freecode-CLI user experience for the common "load this persona" case.
  *
  * Scope (plan A): discovery only — pi does NOT install/update plugins itself.
  * Install plugins through freecode CLI (`/plugin ...`) and pi will pick them up
@@ -32,11 +39,14 @@ function getClaudeConfigHome(): string {
 /** Shape of `~/.claude/plugins/installed_plugins.json` (only the fields we use). */
 interface InstalledPluginsFile {
 	version?: number;
-	plugins?: Record<string, Array<{
-		scope?: string;
-		installPath?: string;
-		version?: string;
-	}>>;
+	plugins?: Record<
+		string,
+		Array<{
+			scope?: string;
+			installPath?: string;
+			version?: string;
+		}>
+	>;
 }
 
 export interface ClaudePluginPaths {
@@ -133,16 +143,28 @@ export function discoverClaudePluginPaths(): ClaudePluginPaths {
 	}
 
 	// FEAT-003 (user level): also expose freecode's user resource roots,
-	// `~/.claude/skills` and `~/.claude/commands`. These hold user-installed
-	// skills (e.g. the compound-engineering `ce-*` family) and user-defined
-	// slash commands, mirrored verbatim from Claude Code / freecode.
+	// `~/.claude/skills`, `~/.claude/commands`, and `~/.claude/agents`. These
+	// hold user-installed skills (e.g. the compound-engineering `ce-*` family),
+	// user-defined slash commands, and user-defined subagent definitions,
+	// mirrored verbatim from Claude Code / freecode. Agent files are folded
+	// into promptPaths so they surface as `/<agent-name>` slash commands
+	// (pi has no subagent dispatch — see file header).
 	const userSkillsDir = join(getClaudeConfigHome(), "skills");
 	const userCommandsDir = join(getClaudeConfigHome(), "commands");
+	const userAgentsDir = join(getClaudeConfigHome(), "agents");
 	if (existsSync(userSkillsDir) && statSync(userSkillsDir).isDirectory()) {
 		result.skillPaths.push(resolvePath(userSkillsDir));
 	}
 	if (existsSync(userCommandsDir) && statSync(userCommandsDir).isDirectory()) {
 		result.promptPaths.push(resolvePath(userCommandsDir));
+	}
+	// Pushed AFTER commands so an explicit user command wins a basename collision
+	// (e.g. ~/.claude/commands/foo.md beats ~/.claude/agents/foo.md). The consumer
+	// (resource-loader.dedupePrompts) keeps first-seen and emits a collision
+	// diagnostic for the loser; ordering commands before agents preserves the
+	// invariant that explicit slash commands outrank persona aliases.
+	if (existsSync(userAgentsDir) && statSync(userAgentsDir).isDirectory()) {
+		result.promptPaths.push(resolvePath(userAgentsDir));
 	}
 
 	return result;
