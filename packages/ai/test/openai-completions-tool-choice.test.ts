@@ -2,7 +2,14 @@ import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
 import { getModel, stream, streamSimple } from "../src/compat.ts";
-import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
+import type {
+	AssistantMessage,
+	Model,
+	OpenAICompletionsCompat,
+	SimpleStreamOptions,
+	Tool,
+	ToolResultMessage,
+} from "../src/types.ts";
 
 const mockState = vi.hoisted(() => ({
 	lastParams: undefined as unknown,
@@ -1293,7 +1300,10 @@ describe("openai-completions tool_choice", () => {
 
 		for (const model of cases) {
 			let payload: unknown;
-			expect(model.compat?.maxTokensField).toBe("max_tokens");
+			// model.compat is typed as AnthropicMessagesCompat | OpenAICompletionsCompat;
+			// these cases are OpenAI completions models, so narrow to access the
+			// OpenAI-only maxTokensField.
+			expect((model.compat as OpenAICompletionsCompat | undefined)?.maxTokensField).toBe("max_tokens");
 
 			await streamSimple(
 				model,
