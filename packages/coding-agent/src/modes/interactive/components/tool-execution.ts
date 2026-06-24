@@ -273,8 +273,15 @@ export class ToolExecutionComponent extends Container {
 			} else {
 				try {
 					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
-					this.callRendererComponent = component;
-					renderContainer.addChild(component);
+					if (component) {
+						this.callRendererComponent = component;
+						renderContainer.addChild(component);
+					} else {
+						// Renderer returned undefined/null — fall back to a safe component so we
+						// never push undefined into the container (which would crash Box.render).
+						this.callRendererComponent = undefined;
+						renderContainer.addChild(this.createCallFallback());
+					}
 					hasContent = true;
 				} catch {
 					this.callRendererComponent = undefined;
@@ -299,9 +306,20 @@ export class ToolExecutionComponent extends Container {
 							theme,
 							this.getRenderContext(this.resultRendererComponent),
 						);
-						this.resultRendererComponent = component;
-						renderContainer.addChild(component);
-						hasContent = true;
+						if (component) {
+							this.resultRendererComponent = component;
+							renderContainer.addChild(component);
+							hasContent = true;
+						} else {
+							// Renderer returned undefined/null — fall back so we never push undefined
+							// into the container (which would crash Box.render).
+							this.resultRendererComponent = undefined;
+							const fallback = this.createResultFallback();
+							if (fallback) {
+								renderContainer.addChild(fallback);
+								hasContent = true;
+							}
+						}
 					} catch {
 						this.resultRendererComponent = undefined;
 						const component = this.createResultFallback();
