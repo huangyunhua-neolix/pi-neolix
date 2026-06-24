@@ -192,7 +192,7 @@ describe("processLine", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("intercepts __pi_event ask_user_question lines and writes response to stdin", () => {
+	it("intercepts __pi_event ask_user_question lines and writes response to stdin (with callback)", async () => {
 		const eventLine = JSON.stringify({
 			__pi_event: "ask_user_question",
 			id: "evt-1",
@@ -205,18 +205,24 @@ describe("processLine", () => {
 		});
 		const onMessageEnd = vi.fn();
 		const onToolResultEnd = vi.fn();
+		const onAskUserQuestion = vi.fn().mockResolvedValue({ "0": "A" });
 
 		const intercepted = processLine(eventLine, {
 			stdin,
 			onMessageEnd,
 			onToolResultEnd,
+			onAskUserQuestion,
 		});
 
 		expect(intercepted).toBe(true);
 		expect(onMessageEnd).not.toHaveBeenCalled();
 		expect(onToolResultEnd).not.toHaveBeenCalled();
-		// stdin.write should have been called with a response event
-		expect(stdinWrite).toHaveBeenCalledTimes(1);
+		// callback should have been called
+		expect(onAskUserQuestion).toHaveBeenCalledTimes(1);
+		// Wait for async resolution + stdin.write
+		await vi.waitFor(() => {
+			expect(stdinWrite).toHaveBeenCalledTimes(1);
+		});
 		const written = String(stdinWrite.mock.calls[0][0]);
 		expect(written).toContain("__pi_event");
 		expect(written).toContain("ask_user_question_response");
@@ -295,28 +301,49 @@ describe("processLine", () => {
 });
 
 describe("handleRelayEvent", () => {
-	it("writes ask_user_question_response to stdin for ask_user_question events", () => {
+	it("writes ask_user_question_response to stdin for ask_user_question events (PI_RELAY_AUTO_PICK stub)", () => {
+		vi.stubEnv("PI_RELAY_AUTO_PICK", "1");
+		try {
+			const stdinWrite = vi.fn();
+			const stdin = { write: stdinWrite };
+
+			handleRelayEvent(
+				{
+					__pi_event: "ask_user_question",
+					id: "test-id",
+					questions: [
+						{
+							question: "Pick",
+							options: [{ label: "A" }, { label: "B" }],
+						},
+					],
+				},
+				stdin,
+			);
+
+			expect(stdinWrite).toHaveBeenCalledTimes(1);
+			const written = String(stdinWrite.mock.calls[0][0]);
+			expect(written).toContain("ask_user_question_response");
+			expect(written).toContain("test-id");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("does not write to stdin when no callback and PI_RELAY_AUTO_PICK not set", () => {
 		const stdinWrite = vi.fn();
 		const stdin = { write: stdinWrite };
 
 		handleRelayEvent(
 			{
 				__pi_event: "ask_user_question",
-				id: "test-id",
-				questions: [
-					{
-						question: "Pick",
-						options: [{ label: "A" }, { label: "B" }],
-					},
-				],
+				id: "test-id-no-stub",
+				questions: [{ question: "q", options: [{ label: "A" }] }],
 			},
 			stdin,
 		);
 
-		expect(stdinWrite).toHaveBeenCalledTimes(1);
-		const written = String(stdinWrite.mock.calls[0][0]);
-		expect(written).toContain("ask_user_question_response");
-		expect(written).toContain("test-id");
+		expect(stdinWrite).not.toHaveBeenCalled();
 	});
 
 	it("does not write to stdin when stdin is null", () => {
@@ -477,7 +504,7 @@ describe("runOneAgentSpawn (spawn loop)", () => {
 			role: "assistant",
 			content: [{ type: "text", text: "hello from child" }],
 		} as any;
-		proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "message_end", message: msg }) + "\n"));
+		proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: msg })}\n`));
 		proc._emitClose(0);
 
 		const result = await promise;
@@ -568,20 +595,14 @@ describe("createAgentToolDefinition execute (single mode via mock spawn)", () =>
 		const spawnFn = vi.fn(() => proc);
 		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
 
-		const promise = def.execute(
-			"call-2",
-			{ subagent_type: "general-purpose", prompt: "say hello" },
-			undefined,
-			undefined,
-			makeCtx("/tmp"),
-		);
+		const promise = def.execute("call-2", { prompt: "say hello" }, undefined, undefined, makeCtx("/tmp"));
 
 		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
 		const msg: Message = {
 			role: "assistant",
 			content: [{ type: "text", text: "hello from subagent" }],
 		} as any;
-		proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "message_end", message: msg }) + "\n"));
+		proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: msg })}\n`));
 		proc._emitClose(0);
 
 		const result: any = await promise;
@@ -594,13 +615,7 @@ describe("createAgentToolDefinition execute (single mode via mock spawn)", () =>
 		const spawnFn = vi.fn(() => proc);
 		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
 
-		const promise = def.execute(
-			"call-3",
-			{ subagent_type: "general-purpose", prompt: "fail" },
-			undefined,
-			undefined,
-			makeCtx("/tmp"),
-		);
+		const promise = def.execute("call-3", { prompt: "fail" }, undefined, undefined, makeCtx("/tmp"));
 
 		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
 		proc.stderr.emit("data", Buffer.from("spawn failure"));
@@ -610,5 +625,222 @@ describe("createAgentToolDefinition execute (single mode via mock spawn)", () =>
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain("Agent failed");
 		expect(result.content[0].text).toContain("spawn failure");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Round-2 fixes: R1 (AskUserQuestion relay), Y1 (unknown agent), Y2 (ctx.getActiveTools)
+// ---------------------------------------------------------------------------
+
+describe("R1: onAskUserQuestion wiring in execute", () => {
+	const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "Agent"];
+
+	function makeMockChildProcess(): any {
+		const stdout = new EventEmitter();
+		const stderr = new EventEmitter();
+		const stdin = { write: vi.fn().mockReturnValue(true), end: vi.fn() };
+		const proc: any = {
+			stdout,
+			stderr,
+			stdin,
+			kill: vi.fn(),
+			killed: false,
+			on: vi.fn((event: string, cb: (...args: any[]) => void) => {
+				proc._handlers = proc._handlers || {};
+				const list = proc._handlers[event] || [];
+				list.push(cb);
+				proc._handlers[event] = list;
+				return proc;
+			}),
+			_emitClose: (code: number) => {
+				const handlers = proc._handlers?.close ?? [];
+				for (const cb of handlers) cb(code);
+			},
+		};
+		return proc;
+	}
+
+	it("passes onAskUserQuestion that uses ctx.ui.select when ctx.hasUI is true", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const selectFn = vi.fn().mockResolvedValue("Option A");
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: true,
+			ui: { select: selectFn },
+			getActiveTools: () => ALL_TOOLS,
+		};
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+
+		const promise = def.execute("r1-1", { prompt: "ask me" }, undefined, undefined, ctx as any);
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+
+		// Emit an ask_user_question event from child
+		const evtLine = JSON.stringify({
+			__pi_event: "ask_user_question",
+			id: "r1-evt-1",
+			questions: [{ question: "Pick one", options: [{ label: "Option A" }, { label: "Option B" }] }],
+		});
+		proc.stdout.emit("data", Buffer.from(`${evtLine}\n`));
+
+		// Wait for ctx.ui.select to be called
+		await vi.waitFor(() => expect(selectFn).toHaveBeenCalledTimes(1));
+		expect(selectFn).toHaveBeenCalledWith("Pick one", ["Option A", "Option B"]);
+
+		// The response should be written to child stdin
+		await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(1));
+		const written = String(proc.stdin.write.mock.calls[0][0]);
+		expect(written).toContain("ask_user_question_response");
+		expect(written).toContain("r1-evt-1");
+		expect(written).toContain("Option A");
+
+		// Emit a message_end and close
+		const msg: Message = {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+		} as any;
+		proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: msg })}\n`));
+		proc._emitClose(0);
+
+		const result: any = await promise;
+		expect(result.content[0].text).toContain("done");
+	});
+
+	it("passes onAskUserQuestion that re-emits to stdout when no TUI (bubble-up)", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			getActiveTools: () => ALL_TOOLS,
+		};
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+
+		const promise = def.execute("r1-2", { prompt: "ask me" }, undefined, undefined, ctx as any);
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+
+		// Emit an ask_user_question event from child
+		const evtLine = JSON.stringify({
+			__pi_event: "ask_user_question",
+			id: "r1-evt-2",
+			questions: [{ question: "Pick", options: [{ label: "A" }, { label: "B" }] }],
+		});
+		proc.stdout.emit("data", Buffer.from(`${evtLine}\n`));
+
+		// The event should be re-emitted to process.stdout (bubble-up)
+		await vi.waitFor(() => {
+			const reEmitted = writeSpy.mock.calls.some((c) => String(c[0]).includes("r1-evt-2"));
+			expect(reEmitted).toBe(true);
+		});
+
+		// Deliver a response (simulating grandparent writing to parent stdin)
+		const { deliverAskUserQuestionResponse } = await import("../src/core/tools/ask-user-question.ts");
+		deliverAskUserQuestionResponse("r1-evt-2", { "0": "B" });
+
+		// The response should be forwarded to child stdin
+		await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(1));
+		const written = String(proc.stdin.write.mock.calls[0][0]);
+		expect(written).toContain("ask_user_question_response");
+		expect(written).toContain("r1-evt-2");
+		expect(written).toContain("B");
+
+		writeSpy.mockRestore();
+
+		const msg: Message = {
+			role: "assistant",
+			content: [{ type: "text", text: "ok" }],
+		} as any;
+		proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "message_end", message: msg })}\n`));
+		proc._emitClose(0);
+
+		await promise;
+	});
+});
+
+describe("Y1: resolveAgent unknown agent name", () => {
+	const ALL_TOOLS = ["read", "bash", "edit"];
+
+	it("throws with available list when agent name is not found", async () => {
+		const proc: any = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+
+		const ctx = { cwd: "/tmp", getActiveTools: () => ALL_TOOLS };
+
+		await expect(
+			def.execute(
+				"y1-1",
+				{ subagent_type: "nonexistent-agent", prompt: "do stuff" },
+				undefined,
+				undefined,
+				ctx as any,
+			),
+		).rejects.toThrow(/Unknown agent: nonexistent-agent/);
+	});
+
+	it("falls back to general-purpose when subagent_type is omitted", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+
+		const ctx = { cwd: "/tmp", getActiveTools: () => ALL_TOOLS };
+
+		const promise = def.execute("y1-2", { prompt: "do stuff" }, undefined, undefined, ctx as any);
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+
+		const args = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+		// Should have --tools with all tools (wildcard)
+		expect(args).toContain("--tools");
+		const toolsIdx = args.indexOf("--tools");
+		expect(args[toolsIdx + 1]).toBe(ALL_TOOLS.join(","));
+
+		proc._emitClose(0);
+		await promise;
+	});
+});
+
+describe("Y2: execute uses ctx.getActiveTools when available", () => {
+	it("uses ctx.getActiveTools() result for allRegisteredToolNames", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const customTools = ["read", "bash", "Agent", "CustomTool"];
+		const getActiveTools = vi.fn(() => customTools);
+		const ctx = { cwd: "/tmp", getActiveTools };
+
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+		const promise = def.execute("y2-1", { prompt: "do stuff" }, undefined, undefined, ctx as any);
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		expect(getActiveTools).toHaveBeenCalled();
+
+		const args = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+		expect(args).toContain("--tools");
+		const toolsIdx = args.indexOf("--tools");
+		expect(args[toolsIdx + 1]).toBe(customTools.join(","));
+
+		proc._emitClose(0);
+		await promise;
+	});
+
+	it("falls back to hardcoded list when ctx has no getActiveTools", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		// ctx without getActiveTools — simulates real ExtensionContext
+		const ctx = { cwd: "/tmp" };
+
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+		const promise = def.execute("y2-2", { prompt: "do stuff" }, undefined, undefined, ctx as any);
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		const args = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+		expect(args).toContain("--tools");
+		const toolsIdx = args.indexOf("--tools");
+		// Should contain at least the base tools
+		expect(args[toolsIdx + 1]).toContain("read");
+		expect(args[toolsIdx + 1]).toContain("bash");
+
+		proc._emitClose(0);
+		await promise;
 	});
 });

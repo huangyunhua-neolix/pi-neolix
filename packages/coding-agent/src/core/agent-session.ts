@@ -347,13 +347,13 @@ export class AgentSession {
 	 * via the agent-tool spawn loop, and returns the final assistant text.
 	 */
 	private _spawnSkill: SpawnSkillFn = async (opts) => {
-		const agent = makeGeneralPurposeAgent([]);
+		const agent = makeGeneralPurposeAgent(this.getActiveToolNames());
 		agent.systemPrompt = opts.skillContent;
 		const result = await runOneAgentSpawn({
 			agent,
 			task: opts.args ?? "",
 			cwd: opts.cwd,
-			allRegisteredToolNames: [],
+			allRegisteredToolNames: this.getActiveToolNames(),
 		});
 		let text = "";
 		for (const msg of result.messages) {

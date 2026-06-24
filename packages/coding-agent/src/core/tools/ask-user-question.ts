@@ -61,6 +61,41 @@ export function deliverAskUserQuestionResponse(id: string, answers: Record<strin
 	}
 }
 
+/**
+ * Register a pending AskUserQuestion and return a promise that resolves
+ * when `deliverAskUserQuestionResponse(id, answers)` is called.
+ *
+ * Used by:
+ *   - The AskUserQuestion tool's own JSON-mode execute (re-emits event to
+ *     stdout, then awaits the grandparent's response).
+ *   - The Agent tool's bubble-up path (child emits ask_user_question, parent
+ *     re-emits to its own stdout, awaits response, forwards to child stdin).
+ *
+ * Rejects with "stdin EOF" if the parent's stdin closes before a response
+ * arrives.
+ */
+export function awaitAskUserQuestionResponse(id: string): Promise<Record<string, unknown>> {
+	const stdinStream = _stdinStream;
+	const onStdinEnd = () => {
+		const pending = pendingQuestions.get(id);
+		if (pending) {
+			pendingQuestions.delete(id);
+			pending.reject(new Error("stdin EOF: parent process closed"));
+		}
+	};
+	if (stdinStream) {
+		stdinStream.once("end", onStdinEnd);
+	}
+
+	return new Promise<Record<string, unknown>>((resolve, reject) => {
+		pendingQuestions.set(id, { resolve, reject });
+	}).finally(() => {
+		if (stdinStream) {
+			stdinStream.removeListener("end", onStdinEnd);
+		}
+	});
+}
+
 export function createAskUserQuestionToolDefinition(_cwd: string): ToolDefinition<typeof askUserQuestionSchema> {
 	return {
 		name: ASK_USER_QUESTION_TOOL_NAME,
@@ -101,24 +136,8 @@ export function createAskUserQuestionToolDefinition(_cwd: string): ToolDefinitio
 			});
 			process.stdout.write(event);
 
-			const stdinStream = _stdinStream;
-			const onStdinEnd = () => {
-				const pending = pendingQuestions.get(id);
-				if (pending) {
-					pendingQuestions.delete(id);
-					pending.reject(new Error("stdin EOF: parent process closed"));
-				}
-			};
-			if (stdinStream) {
-				stdinStream.once("end", onStdinEnd);
-			}
-
-			const responsePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
-				pendingQuestions.set(id, { resolve, reject });
-			});
-
 			try {
-				const answers = await responsePromise;
+				const answers = await awaitAskUserQuestionResponse(id);
 				return {
 					content: [{ type: "text", text: JSON.stringify(answers) }],
 					details: undefined,
@@ -129,10 +148,6 @@ export function createAskUserQuestionToolDefinition(_cwd: string): ToolDefinitio
 					content: [{ type: "text", text: `Error: ${errorMsg}` }],
 					details: undefined,
 				};
-			} finally {
-				if (stdinStream) {
-					stdinStream.removeListener("end", onStdinEnd);
-				}
 			}
 		},
 

@@ -36,7 +36,7 @@ import { theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { AgentConfig } from "./agent-discovery.ts";
 import { type AgentScope, discoverAgents, subtractDisallowed } from "./agent-discovery.ts";
-import { deliverAskUserQuestionResponse } from "./ask-user-question.ts";
+import { awaitAskUserQuestionResponse, deliverAskUserQuestionResponse } from "./ask-user-question.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { decodeLine, encodeEvent, type PiEvent } from "./relay-protocol.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -148,10 +148,12 @@ export function resolveSpawnArgs(opts: {
 /**
  * Handle a decoded relay event from the child's stdout.
  *
- * - `ask_user_question`: The child is requesting user input. In this skeleton,
- *   if `onAskUserQuestion` is provided, it is called (async) and the response
- *   is written back to stdin. If not provided, a stub response (first option
- *   for each question) is written immediately. Real TUI presentation is t-9.
+ * - `ask_user_question`: The child is requesting user input. If
+ *   `onAskUserQuestion` is provided, it is called (async) and the response
+ *   is written back to stdin. If not provided and `PI_RELAY_AUTO_PICK=1` is
+ *   set (headless tests only), a stub response (first option for each
+ *   question) is written. Otherwise, no response is written — the child will
+ *   time out. In production, `execute()` always provides `onAskUserQuestion`.
  * - `ask_user_question_response`: Delivered to the parent's own pending
  *   question (when the parent is itself a child of another process).
  */
@@ -180,29 +182,37 @@ export function handleRelayEvent(
 			return;
 		}
 
-		// Stub: pick the first option for each question (index-based answers).
-		const stubAnswers: Record<string, unknown> = {};
-		const questions = Array.isArray(evt.questions) ? evt.questions : [];
-		for (let i = 0; i < questions.length; i++) {
-			const q = questions[i] as Record<string, unknown> | undefined;
-			if (!q || typeof q !== "object") continue;
-			const options = Array.isArray(q.options) ? q.options : [];
-			if (options.length > 0) {
-				const first = options[0] as Record<string, unknown> | undefined;
-				if (first && typeof first.label === "string") {
-					stubAnswers[String(i)] = first.label;
+		// Stub: only for headless tests (PI_RELAY_AUTO_PICK=1). Picks the first
+		// option for each question. Production code must always provide
+		// onAskUserQuestion via execute().
+		if (process.env.PI_RELAY_AUTO_PICK === "1") {
+			const stubAnswers: Record<string, unknown> = {};
+			const questions = Array.isArray(evt.questions) ? evt.questions : [];
+			for (let i = 0; i < questions.length; i++) {
+				const q = questions[i] as Record<string, unknown> | undefined;
+				if (!q || typeof q !== "object") continue;
+				const options = Array.isArray(q.options) ? q.options : [];
+				if (options.length > 0) {
+					const first = options[0] as Record<string, unknown> | undefined;
+					if (first && typeof first.label === "string") {
+						stubAnswers[String(i)] = first.label;
+					}
 				}
 			}
+			if (stdin) {
+				stdin.write(
+					encodeEvent({
+						__pi_event: "ask_user_question_response",
+						id: evt.id,
+						answers: stubAnswers,
+					}),
+				);
+			}
+			return;
 		}
-		if (stdin) {
-			stdin.write(
-				encodeEvent({
-					__pi_event: "ask_user_question_response",
-					id: evt.id,
-					answers: stubAnswers,
-				}),
-			);
-		}
+
+		// No handler and no auto-pick: child will time out. This is a
+		// configuration error — execute() should always provide onAskUserQuestion.
 		return;
 	}
 
@@ -629,13 +639,66 @@ export function createAgentToolDefinition(
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
-			const allRegisteredToolNames = getAllRegisteredToolNames();
+
+			// Y2: Prefer ctx.getActiveTools() (real runtime tool list) when
+			// available. ExtensionContext does not expose this method, but
+			// ExtensionCommandContext and test mocks do — duck-type to detect.
+			// Fall back to the hardcoded list otherwise.
+			const ctxAny = ctx as unknown as { getActiveTools?: () => string[] };
+			const ctxToolNames = typeof ctxAny.getActiveTools === "function" ? (ctxAny.getActiveTools() as string[]) : [];
+			const allRegisteredToolNames = ctxToolNames.length > 0 ? ctxToolNames : getAllRegisteredToolNames();
+
 			const defaultProvider = readDefaultProvider();
 			const modelToUse: string | undefined = undefined;
 
+			// R1: Construct onAskUserQuestion callback based on available UI.
+			// - ctx.hasUI && ctx.ui: render each question via ctx.ui.select (TUI).
+			// - No TUI but stdin is a pipe (spawned child): re-emit event to
+			//   process.stdout so the grandparent can handle it, then await the
+			//   response via deliverAskUserQuestionResponse.
+			// - Neither: throw — child will time out. This is the only legitimate
+			//   error path; silent degrade is forbidden (fc-spec-writer depends on
+			//   asking questions).
+			let onAskUserQuestion:
+				| ((evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>)
+				| undefined;
+
+			if (ctx.hasUI && ctx.ui) {
+				onAskUserQuestion = async (evt) => {
+					const answers: Record<string, unknown> = {};
+					const questions = Array.isArray(evt.questions) ? evt.questions : [];
+					for (let i = 0; i < questions.length; i++) {
+						const q = questions[i] as
+							| { question?: string; header?: string; options: { label: string }[] }
+							| undefined;
+						if (!q || !Array.isArray(q.options)) continue;
+						const title = q.header ?? q.question ?? "Select an option";
+						const labels = q.options.map((o) => o.label);
+						const selected = await ctx.ui.select(title, labels);
+						if (selected === undefined) break;
+						answers[String(i)] = selected;
+					}
+					return answers;
+				};
+			} else if (!process.stdin.isTTY) {
+				// Bubble-up: re-emit to stdout, wait for grandparent's response.
+				onAskUserQuestion = async (evt) => {
+					process.stdout.write(
+						encodeEvent({
+							__pi_event: "ask_user_question",
+							id: evt.id,
+							questions: evt.questions,
+						}),
+					);
+					return awaitAskUserQuestionResponse(evt.id);
+				};
+			}
+			// else: no TUI and stdin is TTY — no handler. Child will time out.
+			// This is the "neither TUI nor bubble-up" error path.
+
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasSingle = Boolean(params.subagent_type || params.agent) && Boolean(params.prompt || params.task);
+			const hasSingle = Boolean(params.prompt || params.task);
 
 			if (!hasChain && !hasTasks && !hasSingle) {
 				return {
@@ -652,11 +715,18 @@ export function createAgentToolDefinition(
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 
+			// Y1: Omitted name → general-purpose fork fallback (correct).
+			// Name provided but not found → throw with available agent list.
+			// Previously this silently fell back to general-purpose, masking
+			// typos and misconfiguration.
 			const resolveAgent = (name?: string): AgentConfig => {
 				if (!name) return makeGeneralPurposeAgent(allRegisteredToolNames);
 				const found = agents.find((a) => a.name === name);
 				if (found) return found;
-				return makeGeneralPurposeAgent(allRegisteredToolNames);
+				const available = agents.map((a) => a.name).filter(Boolean);
+				throw new Error(
+					`Unknown agent: ${name}. Available agents: ${available.length > 0 ? available.join(", ") : "(none)"}`,
+				);
 			};
 
 			const spawnOpts = (
@@ -672,6 +742,7 @@ export function createAgentToolDefinition(
 				modelToUse: modelToUse ?? agentCfg.model,
 				defaultProvider,
 				signal,
+				onAskUserQuestion,
 				step,
 				spawnFn,
 			});
