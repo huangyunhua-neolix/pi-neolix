@@ -9,7 +9,9 @@ import {
 	subtractDisallowed,
 } from "../src/core/tools/agent-discovery.ts";
 
-describe("agent-discovery frontmatter fields", () => {
+const describeV2 = process.env.PI_AGENT_RUNTIME_V2 === "1" ? describe : describe.skip;
+
+describeV2("agent-discovery frontmatter fields (V2-only)", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
