@@ -68,7 +68,7 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
 // ---------------------------------------------------------------------
 // Session-level agent switching ("/agent:<name>" switches the CURRENT
 // session into that agent's persona, instead of spawning a one-shot
-// non-interactive subprocess). See registerAgentSlashCommands + the
+// non-interactive subprocess). See registerAgentSwitchHandler + the
 // before_agent_start hook in the default export.
 // ---------------------------------------------------------------------
 interface ActiveAgentState {
@@ -77,6 +77,33 @@ interface ActiveAgentState {
 	prevSessionName: string | undefined;
 }
 let activeAgentState: ActiveAgentState | null = null;
+
+/**
+ * Agent names the user has approved this process (one-time trust prompt).
+ * Leaking "trusted" across sessions is benign (the user already consented),
+ * so this is not reset on session change.
+ */
+const trustedAgentNames = new Set<string>();
+
+/**
+ * Clear the active agent persona. With `restore`, first restore the snapshot
+ * tools + session name on the CURRENT session (outgoing session transitions
+ * where `pi` is still bound to the outgoing runtime); without `restore`, just
+ * null the state (session_start, where `pi` is bound to the incoming session
+ * and must not inherit the outgoing snapshot's tool set).
+ */
+function deactivateActiveAgent(pi: ExtensionAPI, { restore }: { restore: boolean }): void {
+	if (!activeAgentState) return;
+	if (restore) {
+		try {
+			pi.setActiveTools(activeAgentState.prevTools);
+			pi.setSessionName(activeAgentState.prevSessionName ?? "");
+		} catch {
+			// Runtime may be mid-teardown during a session transition; swallow.
+		}
+	}
+	activeAgentState = null;
+}
 
 /**
  * Preamble prepended to every turn while an agent is active, translating the
@@ -1144,6 +1171,18 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt: `${event.systemPrompt}\n\n${preamble}\n\n${activeAgentState.agent.systemPrompt}`,
 		};
 	});
+
+	// Prevent cross-session leak: activeAgentState is module-level, so a persona
+	// activated in one session would otherwise be injected into an unrelated
+	// session after /new, /resume, /fork, or /reload. session_before_switch and
+	// session_before_fork fire on the OUTGOING session's runner (pi still bound
+	// to outgoing) -> restore its tools/name and clear. session_start fires for
+	// new/resume/fork/reload/startup -> belt that guarantees the persona is null
+	// before the new session's first turn (no tool restore: pi is the incoming
+	// session, which must start with its own defaults, not the outgoing snapshot).
+	pi.on("session_before_switch", () => deactivateActiveAgent(pi, { restore: true }));
+	pi.on("session_before_fork", () => deactivateActiveAgent(pi, { restore: true }));
+	pi.on("session_start", () => deactivateActiveAgent(pi, { restore: false }));
 }
 
 /**
@@ -1165,7 +1204,7 @@ function registerAgentSwitchHandler(pi: ExtensionAPI): void {
 	// synchronously — works in both -p and interactive, no microtask/
 	// sendUserMessage re-entrancy. before_agent_start (registered in the default
 	// export) injects the agent's system prompt for that and every later turn.
-	pi.on("input", (event, ctx) => {
+	pi.on("input", async (event, ctx) => {
 		const text = event.text ?? "";
 		if (!text.startsWith("/agent:")) return; // pass-through (action: continue)
 
@@ -1197,6 +1236,25 @@ function registerAgentSwitchHandler(pi: ExtensionAPI): void {
 			const available = current.agents.map((a) => a.name).join(", ") || "none";
 			ctx.ui.notify(`Unknown agent: "${name}". Available: ${available}`, "error");
 			return { action: "handled" as const };
+		}
+
+		// One-time trust prompt (first switch of this agent in the process).
+		// Unlike the isolated `subagent` tool, /agent:<name> runs the agent's
+		// systemPrompt IN this session with full conversation history + active
+		// tools — so a third-party agent (e.g. from ~/.claude/agents) could read
+		// prior turns. Confirm once per agent; remember the decision. Skipped
+		// when there is no dialog UI (e.g. -p print mode: the user invoked it
+		// explicitly, so proceed without a modal).
+		if (ctx.hasUI && !trustedAgentNames.has(agentCfg.name)) {
+			const ok = await ctx.ui.confirm(
+				`Switch to agent "${agentCfg.name}"?`,
+				`This switches the CURRENT session to run as "${agentCfg.name}". Its system prompt runs HERE — with access to your full conversation history and active tools — NOT in an isolated subprocess.\n\nSource: ${agentCfg.filePath}\n\nOnly continue for agents you trust.`,
+			);
+			if (!ok) {
+				ctx.ui.notify("Switch cancelled.", "info");
+				return { action: "handled" as const };
+			}
+			trustedAgentNames.add(agentCfg.name);
 		}
 
 		// Snapshot current tools + session name ONCE (before the first switch)
