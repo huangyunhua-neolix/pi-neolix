@@ -16,6 +16,12 @@
 
 - Fixed `pi --resume` to load user package themes and resolve automatic light/dark theme settings.
 
+## [0.79.11] - 2026-06-24
+
+### Added
+
+- **PI_AGENT_RUNTIME_V2** - Opt-in agent runtime (enable with `PI_AGENT_RUNTIME_V2=1`) that expands session frontmatter and registers five new tools: `Agent` (subagent dispatch), `Skill` (skill loader), `AskUserQuestion` (structured user prompts), `WebFetch` (URL fetch), and `WebSearch` (web search). The flag remains opt-in: the default runtime and environment are unchanged, and `PI_AGENT_RUNTIME_V2` is not added to any default env.
+
 ## [0.79.10] - 2026-06-22
 
 ### New Features
