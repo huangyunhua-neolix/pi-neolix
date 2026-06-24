@@ -35,7 +35,7 @@ const KNOWN_EVENT_TAGS = new Set<string>(["ask_user_question", "ask_user_questio
  * line-reader. Callers must not pre-append newlines.
  */
 export function encodeEvent(evt: PiEvent): string {
-	return JSON.stringify(evt) + "\n";
+	return `${JSON.stringify(evt)}\n`;
 }
 
 /**
@@ -67,35 +67,35 @@ export function decodeLine(line: string): PiEvent | null {
 	}
 
 	const obj = parsed as Record<string, unknown>;
-	const tag = obj["__pi_event"];
+	const tag = obj.__pi_event;
 
 	if (typeof tag !== "string" || !KNOWN_EVENT_TAGS.has(tag)) {
 		return null;
 	}
 
-	if (typeof obj["id"] !== "string" || obj["id"].length === 0) {
+	if (typeof obj.id !== "string" || obj.id.length === 0) {
 		return null;
 	}
 
 	if (tag === "ask_user_question") {
-		if (!Array.isArray(obj["questions"])) {
+		if (!Array.isArray(obj.questions)) {
 			return null;
 		}
 		return {
 			__pi_event: "ask_user_question",
-			id: obj["id"] as string,
-			questions: obj["questions"] as unknown[],
+			id: obj.id as string,
+			questions: obj.questions as unknown[],
 		};
 	}
 
 	if (tag === "ask_user_question_response") {
-		const answers = obj["answers"];
+		const answers = obj.answers;
 		if (typeof answers !== "object" || answers === null || Array.isArray(answers)) {
 			return null;
 		}
 		return {
 			__pi_event: "ask_user_question_response",
-			id: obj["id"] as string,
+			id: obj.id as string,
 			answers: answers as Record<string, unknown>,
 		};
 	}
