@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverClaudePluginPaths } from "../src/core/claude-plugins.ts";
 
 // The module reads from homedir()/.claude/plugins/installed_plugins.json.
@@ -138,7 +138,7 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		}
 	});
 
-	it("also exposes user-level ~/.claude/skills and ~/.claude/commands", () => {
+	it("also exposes user-level ~/.claude/skills, ~/.claude/commands, and ~/.claude/agents", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
 		// user-level skills (e.g. compound-engineering ce-* family)
 		mkdirSync(join(dir, ".claude", "skills", "ce-compound"), { recursive: true });
@@ -149,13 +149,20 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		// user-level command
 		mkdirSync(join(dir, ".claude", "commands"), { recursive: true });
 		writeFileSync(join(dir, ".claude", "commands", "dual-review.md"), "---\ndescription: dual review\n---\n");
+		// user-level agent definition (e.g. fc-spec-writer) — surfaced as a
+		// prompt-style template since pi has no subagent dispatch.
+		mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+		writeFileSync(
+			join(dir, ".claude", "agents", "fc-spec-writer.md"),
+			"---\nname: fc-spec-writer\ndescription: writes a spec\nmodel: inherit\n---\n",
+		);
 		// no installed_plugins.json -> plugin section contributes nothing,
 		// but user-level dirs must still be discovered.
 		withHome(dir);
 		try {
 			const result = discoverClaudePluginPaths();
 			expect(result.skillPaths).toEqual([join(dir, ".claude", "skills")]);
-			expect(result.promptPaths).toEqual([join(dir, ".claude", "commands")]);
+			expect(result.promptPaths).toEqual([join(dir, ".claude", "commands"), join(dir, ".claude", "agents")]);
 			expect(result.loadedPlugins).toEqual([]); // no plugins in manifest
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -182,10 +189,7 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		withHome(dir);
 		try {
 			const result = discoverClaudePluginPaths();
-			expect(result.skillPaths).toEqual([
-				join(pluginA, "skills"),
-				join(dir, ".claude", "skills"),
-			]);
+			expect(result.skillPaths).toEqual([join(pluginA, "skills"), join(dir, ".claude", "skills")]);
 			expect(result.loadedPlugins).toEqual(["a@market"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -203,10 +207,7 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		// plugin in cache: should be IGNORED
 		const cachedPlugin = join(dir, ".claude", "plugins", "cache", "publisher", "superpowers", "5.1.0");
 		mkdirSync(join(cachedPlugin, "skills", "brainstorming"), { recursive: true });
-		writeFileSync(
-			join(cachedPlugin, "skills", "brainstorming", "SKILL.md"),
-			"---\nname: brainstorming\n---\n",
-		);
+		writeFileSync(join(cachedPlugin, "skills", "brainstorming", "SKILL.md"), "---\nname: brainstorming\n---\n");
 
 		// plugin NOT in cache: should be loaded
 		const realPlugin = join(dir, "real-plugin", "1.0.0");
