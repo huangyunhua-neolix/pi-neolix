@@ -169,6 +169,28 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		}
 	});
 
+	it("orders ~/.claude/commands before ~/.claude/agents so commands win basename collisions", () => {
+		// dedupePrompts (resource-loader) keeps first-seen and emits a collision
+		// diagnostic for the loser. Pinning the directory order here locks the
+		// contract: an explicit user command outranks a same-named agent persona.
+		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
+		mkdirSync(join(dir, ".claude", "commands"), { recursive: true });
+		writeFileSync(join(dir, ".claude", "commands", "foo.md"), "---\ndescription: cmd\n---\n");
+		mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+		writeFileSync(join(dir, ".claude", "agents", "foo.md"), "---\nname: foo\n---\n");
+
+		withHome(dir);
+		try {
+			const result = discoverClaudePluginPaths();
+			expect(result.promptPaths).toEqual([
+				join(dir, ".claude", "commands"),
+				join(dir, ".claude", "agents"),
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("merges plugin paths with user-level paths together", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-claude-plugins-"));
 		const pluginsDir = join(dir, ".claude", "plugins");

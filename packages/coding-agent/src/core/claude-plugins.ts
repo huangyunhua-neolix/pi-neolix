@@ -158,6 +158,11 @@ export function discoverClaudePluginPaths(): ClaudePluginPaths {
 	if (existsSync(userCommandsDir) && statSync(userCommandsDir).isDirectory()) {
 		result.promptPaths.push(resolvePath(userCommandsDir));
 	}
+	// Pushed AFTER commands so an explicit user command wins a basename collision
+	// (e.g. ~/.claude/commands/foo.md beats ~/.claude/agents/foo.md). The consumer
+	// (resource-loader.dedupePrompts) keeps first-seen and emits a collision
+	// diagnostic for the loser; ordering commands before agents preserves the
+	// invariant that explicit slash commands outrank persona aliases.
 	if (existsSync(userAgentsDir) && statSync(userAgentsDir).isDirectory()) {
 		result.promptPaths.push(resolvePath(userAgentsDir));
 	}
