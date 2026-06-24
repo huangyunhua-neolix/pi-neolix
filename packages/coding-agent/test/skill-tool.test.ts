@@ -185,4 +185,61 @@ describe("createSkillTool", () => {
 		const tool = createSkillTool(testDir, [a]);
 		await expect(tool.execute("call-y1-2", { skill_name: "nope" })).rejects.toThrow(/y1-a/);
 	});
+
+	// R2-14: skill spawn receives signal + onAskUserQuestion
+	describe("R2-14: spawn receives signal and onAskUserQuestion", () => {
+		it("passes signal and onAskUserQuestion from execute to spawnSkill", async () => {
+			const skillDir = join(testDir, "r2-14-skill");
+			const skill = writeSkill(skillDir, "r2-14-skill", "x".repeat(3000));
+			const spawnMock = vi.fn().mockResolvedValue({
+				content: [{ type: "text", text: "ok" }],
+			});
+			// Use createSkillToolDefinition directly so we can pass ctx as 5th arg.
+			const def = createSkillToolDefinition(testDir, [skill], { spawnSkill: spawnMock });
+
+			const ac = new AbortController();
+			const mockCtx = {
+				mode: "json",
+				hasUI: false,
+			} as any;
+
+			await def.execute("r2-14-1", { skill_name: "r2-14-skill" }, ac.signal, undefined, mockCtx);
+
+			expect(spawnMock).toHaveBeenCalledTimes(1);
+			const callArg: SkillSpawnOptions = spawnMock.mock.calls[0][0];
+			expect(callArg.signal).toBe(ac.signal);
+			expect(callArg.onAskUserQuestion).toBeDefined();
+			expect(typeof callArg.onAskUserQuestion).toBe("function");
+		});
+
+		it("constructs TUI onAskUserQuestion when ctx.hasUI is true", async () => {
+			const skillDir = join(testDir, "r2-14-tui-skill");
+			const skill = writeSkill(skillDir, "r2-14-tui-skill", "x".repeat(3000));
+			const spawnMock = vi.fn().mockResolvedValue({
+				content: [{ type: "text", text: "ok" }],
+			});
+			const def = createSkillToolDefinition(testDir, [skill], { spawnSkill: spawnMock });
+
+			const selectFn = vi.fn().mockResolvedValue("Option A");
+			const mockCtx = {
+				mode: "tui",
+				hasUI: true,
+				ui: { select: selectFn },
+			} as any;
+
+			await def.execute("r2-14-2", { skill_name: "r2-14-tui-skill" }, undefined, undefined, mockCtx);
+
+			expect(spawnMock).toHaveBeenCalledTimes(1);
+			const callArg: SkillSpawnOptions = spawnMock.mock.calls[0][0];
+			expect(callArg.onAskUserQuestion).toBeDefined();
+			expect(typeof callArg.onAskUserQuestion).toBe("function");
+
+			// Verify the TUI path is used by calling the handler
+			await callArg.onAskUserQuestion!({
+				id: "test",
+				questions: [{ question: "Pick", options: [{ label: "Option A" }] }],
+			});
+			expect(selectFn).toHaveBeenCalledWith("Pick", ["Option A"]);
+		});
+	});
 });

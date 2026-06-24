@@ -5,6 +5,7 @@ import { type Static, Type } from "typebox";
 import { parseFrontmatter } from "../../utils/frontmatter.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { Skill } from "../skills.ts";
+import { encodeEvent } from "./relay-protocol.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 export const SKILL_TOOL_NAME = "Skill";
@@ -18,6 +19,13 @@ const skillSchema = Type.Object({
 
 export type SkillToolInput = Static<typeof skillSchema>;
 
+/**
+ * R2-14: SkillSpawnOptions now carries `signal` and `onAskUserQuestion`
+ * so the spawned skill child can be aborted and can relay AskUserQuestion
+ * events back to the parent. Without these, a skill calling
+ * AskUserQuestion would deadlock (no handler, child waits on stdin,
+ * parent waits on spawn promise, no AbortSignal).
+ */
 export interface SkillSpawnOptions {
 	skillName: string;
 	skillContent: string;
@@ -25,6 +33,8 @@ export interface SkillSpawnOptions {
 	skillBaseDir: string;
 	args?: string;
 	cwd: string;
+	signal?: AbortSignal;
+	onAskUserQuestion?: (evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>;
 }
 
 export type SpawnSkillFn = (opts: SkillSpawnOptions) => Promise<{ content: TextContent[]; details?: unknown }>;
@@ -73,7 +83,7 @@ export function createSkillToolDefinition(
 			"Invoke a skill by name. Small skills without declared tools are inlined into the conversation; large skills or skills that declare tools are spawned as a subprocess.",
 		promptSnippet: "Invoke a skill",
 		parameters: skillSchema,
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const { skill_name, args } = params;
 			const skill = skills.find((s) => s.name === skill_name);
 			if (!skill) {
@@ -90,6 +100,44 @@ export function createSkillToolDefinition(
 				if (!spawnSkill) {
 					throw new Error(`Skill ${skill.name} requires spawn but no spawnSkill function was provided`);
 				}
+				// R2-14: pass signal + onAskUserQuestion so the spawned skill
+				// child can be aborted and can relay AskUserQuestion events.
+				// The onAskUserQuestion handler is constructed the same way as
+				// in agent-tool.ts: TUI → ctx.ui.select; no TUI → bubble-up
+				// via stdout + awaitAskUserQuestionResponse.
+				let onAskUserQuestion:
+					| ((evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>)
+					| undefined;
+				if (ctx?.hasUI && ctx?.ui) {
+					onAskUserQuestion = async (evt) => {
+						const answers: Record<string, unknown> = {};
+						const questions = Array.isArray(evt.questions) ? evt.questions : [];
+						for (let i = 0; i < questions.length; i++) {
+							const q = questions[i] as
+								| { question?: string; header?: string; options: { label: string }[] }
+								| undefined;
+							if (!q || !Array.isArray(q.options)) continue;
+							const title = q.header ?? q.question ?? "Select an option";
+							const labels = q.options.map((o) => o.label);
+							const selected = await ctx.ui.select(title, labels);
+							if (selected === undefined) break;
+							answers[String(i)] = selected;
+						}
+						return answers;
+					};
+				} else {
+					const { awaitAskUserQuestionResponse } = await import("./ask-user-question.ts");
+					onAskUserQuestion = async (evt) => {
+						process.stdout.write(
+							encodeEvent({
+								__pi_event: "ask_user_question",
+								id: evt.id,
+								questions: evt.questions,
+							}),
+						);
+						return awaitAskUserQuestionResponse(evt.id);
+					};
+				}
 				const spawnResult = await spawnSkill({
 					skillName: skill.name,
 					skillContent,
@@ -97,6 +145,8 @@ export function createSkillToolDefinition(
 					skillBaseDir: skill.baseDir,
 					args,
 					cwd,
+					signal,
+					onAskUserQuestion,
 				});
 				return {
 					content: spawnResult.content,

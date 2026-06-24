@@ -262,4 +262,38 @@ describe("AskUserQuestion tool", () => {
 			expect(listenerCountAfter - listenerCountBefore).toBeLessThanOrEqual(1);
 		});
 	});
+
+	// R2-13: AskUserQuestion timeout
+	describe("R2-13: timeout", () => {
+		it("rejects with timeout when no response arrives within PI_ASK_USER_QUESTION_TIMEOUT_MS", async () => {
+			vi.stubEnv("PI_ASK_USER_QUESTION_TIMEOUT_MS", "50");
+			try {
+				const stdinStream = new PassThrough();
+				_setStdinStreamForTesting(stdinStream);
+
+				const mockCtx = {
+					mode: "json",
+					hasUI: false,
+				} as unknown as ExtensionContext;
+				const definition = createAskUserQuestionToolDefinition(process.cwd());
+
+				const execPromise = definition.execute(
+					"r2-13-1",
+					{
+						questions: [{ question: "Pick", options: [{ label: "A" }] }],
+					},
+					undefined,
+					undefined,
+					mockCtx,
+				);
+
+				const result = await execPromise;
+				// The tool catches the rejection and returns an error text
+				const text = (result.content[0] as { type: string; text: string }).text;
+				expect(text).toMatch(/timed out/i);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+	});
 });

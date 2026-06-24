@@ -126,6 +126,71 @@ describeV2("agent-discovery frontmatter fields (V2-only)", () => {
 		expect(agent.tools).toEqual(["read", "write"]);
 		expect(agent.model).toBe("claude-3-5-sonnet");
 	});
+
+	// R2-1: YAML array form of `tools` must be recognized.
+	it("parses tools as YAML array (R2-1)", () => {
+		writeAgent("array-tools", [
+			"name: array-tools",
+			'description: "Agent with array tools"',
+			"tools:",
+			"  - Read",
+			"  - Bash",
+		]);
+		const agent = getAgent("array-tools");
+		expect(agent.tools).toEqual(["read", "bash"]);
+	});
+
+	it("parses empty tools array as fail-safe [] not wildcard (R2-1)", () => {
+		writeAgent("empty-array-tools", [
+			"name: empty-array-tools",
+			'description: "Agent with empty array tools"',
+			"tools: []",
+		]);
+		const agent = getAgent("empty-array-tools");
+		// Empty array → fail-safe [] (no tools), NOT undefined (wildcard).
+		expect(agent.tools).toEqual([]);
+		expect(agent.tools).not.toBeUndefined();
+	});
+
+	it("parses all-unmappable tools array as fail-safe [] (R2-1)", () => {
+		writeAgent("unmappable-tools", [
+			"name: unmappable-tools",
+			'description: "Agent with unmappable tools"',
+			"tools:",
+			"  - UnknownTool1",
+			"  - UnknownTool2",
+		]);
+		const agent = getAgent("unmappable-tools");
+		expect(agent.tools).toEqual([]);
+	});
+
+	// R2-2: symlink escape guard
+	it("skips symlinks that resolve outside the agents directory (R2-2)", () => {
+		// Create a file outside the agents dir to symlink to.
+		const outsideFile = path.join(tempDir, "secret.txt");
+		fs.writeFileSync(outsideFile, "secret content");
+		// Create symlink inside agents dir pointing outside.
+		const agentsDir = path.join(tempDir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		fs.symlinkSync(outsideFile, path.join(agentsDir, "evil.md"));
+
+		const result = discoverAgents(tempDir, "project");
+		const evil = result.agents.find((a) => a.name === "evil");
+		expect(evil).toBeUndefined();
+	});
+
+	it("accepts symlinks that resolve inside the agents directory (R2-2)", () => {
+		const agentsDir = path.join(tempDir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		// Create a real agent file, then symlink to it from another name.
+		const realFile = path.join(agentsDir, "real.md");
+		fs.writeFileSync(realFile, "---\nname: real\ndescription: real agent\n---\nbody");
+		fs.symlinkSync(realFile, path.join(agentsDir, "linked.md"));
+
+		const result = discoverAgents(tempDir, "project");
+		const linked = result.agents.find((a) => a.name === "real");
+		expect(linked).toBeDefined();
+	});
 });
 
 describe("subtractDisallowed", () => {

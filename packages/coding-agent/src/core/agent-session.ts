@@ -345,6 +345,11 @@ export class AgentSession {
 	 * Bound spawnSkill callback for the Skill tool. Spawns a child `pi`
 	 * process with the skill body as `--append-system-prompt`, drains stdout
 	 * via the agent-tool spawn loop, and returns the final assistant text.
+	 *
+	 * R2-14: now passes `signal` and `onAskUserQuestion` from the
+	 * SkillSpawnOptions through to runOneAgentSpawn. Without these, a skill
+	 * calling AskUserQuestion would deadlock (no handler, child waits on
+	 * stdin, parent waits on spawn promise, no AbortSignal).
 	 */
 	private _spawnSkill: SpawnSkillFn = async (opts) => {
 		const agent = makeGeneralPurposeAgent(this.getActiveToolNames());
@@ -354,6 +359,8 @@ export class AgentSession {
 			task: opts.args ?? "",
 			cwd: opts.cwd,
 			allRegisteredToolNames: this.getActiveToolNames(),
+			signal: opts.signal,
+			onAskUserQuestion: opts.onAskUserQuestion,
 		});
 		let text = "";
 		for (const msg of result.messages) {

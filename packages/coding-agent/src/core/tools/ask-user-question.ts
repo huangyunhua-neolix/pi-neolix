@@ -99,9 +99,24 @@ export function deliverAskUserQuestionResponse(id: string, answers: Record<strin
  *
  * Rejects with "stdin EOF" if the parent's stdin closes before a response
  * arrives.
+ *
+ * R2-13: rejects with "timeout" if no response arrives within
+ * `PI_ASK_USER_QUESTION_TIMEOUT_MS` (default 10 minutes). Without this,
+ * a parent that neither responds nor closes stdin leaves the child
+ * hanging indefinitely.
  */
 export function awaitAskUserQuestionResponse(id: string): Promise<Record<string, unknown>> {
 	const stdinStream = _stdinStream;
+
+	// R2-13: optional timeout to prevent indefinite hang.
+	const timeoutMs = (() => {
+		const env = process.env.PI_ASK_USER_QUESTION_TIMEOUT_MS;
+		if (env !== undefined && env !== "") {
+			const parsed = Number.parseInt(env, 10);
+			if (Number.isFinite(parsed) && parsed > 0) return parsed;
+		}
+		return 10 * 60 * 1000; // 10 minutes default
+	})();
 
 	// FIX-8: register on the shared fan-out set instead of per-call once().
 	const onStdinEnd = (endId: string) => {
@@ -118,7 +133,25 @@ export function awaitAskUserQuestionResponse(id: string): Promise<Record<string,
 	}
 
 	return new Promise<Record<string, unknown>>((resolve, reject) => {
-		pendingQuestions.set(id, { resolve, reject });
+		const timer = setTimeout(() => {
+			const pending = pendingQuestions.get(id);
+			if (pending) {
+				pendingQuestions.delete(id);
+				pending.reject(new Error(`AskUserQuestion timed out after ${timeoutMs}ms`));
+			}
+		}, timeoutMs);
+		// Don't keep the event loop alive solely for this timer.
+		timer.unref();
+		pendingQuestions.set(id, {
+			resolve: (val) => {
+				clearTimeout(timer);
+				resolve(val);
+			},
+			reject: (err) => {
+				clearTimeout(timer);
+				reject(err);
+			},
+		});
 	}).finally(() => {
 		_stdinEndHandlers.delete(onStdinEnd);
 	});

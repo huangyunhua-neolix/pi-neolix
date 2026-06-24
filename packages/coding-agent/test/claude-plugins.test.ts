@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverClaudePluginPaths } from "../src/core/claude-plugins.ts";
 
 // The module reads from homedir()/.claude/plugins/installed_plugins.json.
@@ -182,10 +182,7 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		withHome(dir);
 		try {
 			const result = discoverClaudePluginPaths();
-			expect(result.skillPaths).toEqual([
-				join(pluginA, "skills"),
-				join(dir, ".claude", "skills"),
-			]);
+			expect(result.skillPaths).toEqual([join(pluginA, "skills"), join(dir, ".claude", "skills")]);
 			expect(result.loadedPlugins).toEqual(["a@market"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -203,10 +200,7 @@ describe("claude-plugins discovery (FEAT-003)", () => {
 		// plugin in cache: should be IGNORED
 		const cachedPlugin = join(dir, ".claude", "plugins", "cache", "publisher", "superpowers", "5.1.0");
 		mkdirSync(join(cachedPlugin, "skills", "brainstorming"), { recursive: true });
-		writeFileSync(
-			join(cachedPlugin, "skills", "brainstorming", "SKILL.md"),
-			"---\nname: brainstorming\n---\n",
-		);
+		writeFileSync(join(cachedPlugin, "skills", "brainstorming", "SKILL.md"), "---\nname: brainstorming\n---\n");
 
 		// plugin NOT in cache: should be loaded
 		const realPlugin = join(dir, "real-plugin", "1.0.0");

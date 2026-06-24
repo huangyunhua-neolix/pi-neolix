@@ -38,10 +38,28 @@ import type { AgentConfig } from "./agent-discovery.ts";
 import { type AgentScope, discoverAgents, subtractDisallowed } from "./agent-discovery.ts";
 import { awaitAskUserQuestionResponse, deliverAskUserQuestionResponse } from "./ask-user-question.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { allToolNames } from "./index.ts";
 import { decodeLine, encodeEvent, type PiEvent } from "./relay-protocol.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 export const AGENT_TOOL_NAME = "Agent";
+
+/**
+ * R2-3: Map a Node.js signal name (e.g. "SIGKILL", "SIGTERM") to its
+ * numeric signo, for computing the 128+signo exit code convention used
+ * by shells when a process is killed by a signal. Falls back to 1 if
+ * the signal name is unrecognized.
+ */
+function signalToNumber(sig: string): number {
+	const constants = os.constants.signals as Record<string, number | undefined>;
+	// Node.js signal constants are uppercase without the "SIG" prefix in
+	// os.constants.signals (e.g. { SIGKILL: 9, SIGTERM: 15 }). The `close`
+	// event passes the full name "SIGKILL".
+	const val = constants[sig];
+	if (typeof val === "number") return val;
+	// Fallback for any unexpected signal name.
+	return 1;
+}
 
 /**
  * stdio configuration for spawned agent processes.
@@ -484,6 +502,12 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 			tmpPromptPath = tmp.filePath;
 		}
 
+		// R2-4: cap task length to 64KB to prevent ARG_MAX overflow DoS.
+		// Linux ARG_MAX is ~2MB but prompt-injected long tasks can still
+		// cause spawn failures. 64KB is generous for legitimate prompts.
+		const MAX_TASK_LENGTH = 64 * 1024;
+		const taskToUse = task.length > MAX_TASK_LENGTH ? `${task.slice(0, MAX_TASK_LENGTH)}\n[...truncated]` : task;
+
 		const argv = resolveSpawnArgs({
 			agent,
 			modelToUse,
@@ -491,7 +515,7 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 			allRegisteredToolNames,
 			tmpPromptPath,
 		});
-		argv.push(`Task: ${task}`);
+		argv.push(`Task: ${taskToUse}`);
 
 		const invocation = getPiInvocation(argv);
 		let buffer = "";
@@ -557,28 +581,15 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 			// exit, preventing a stale timer from firing on a recycled PID.
 			let sigkillTimer: NodeJS.Timeout | null = null;
 
-			proc.on("close", (code) => {
-				if (sigkillTimer) {
-					clearTimeout(sigkillTimer);
-					sigkillTimer = null;
-				}
-				if (buffer.trim()) processLine(buffer, processCtx);
-				resolve(code ?? 0);
-			});
-
-			proc.on("error", (err: NodeJS.ErrnoException) => {
-				if (sigkillTimer) {
-					clearTimeout(sigkillTimer);
-					sigkillTimer = null;
-				}
-				// Preserve the spawn error message so callers see WHY it failed.
-				result.stderr += `\n[agent-tool] spawn error: ${err.message}\n`;
-				resolve(1);
-			});
-
+			// R2-7: hoist killProc so we can remove the abort listener on
+			// clean close, preventing listener accumulation across spawns.
+			let killProc: (() => void) | null = null;
 			if (signal) {
-				const killProc = () => {
+				killProc = () => {
 					wasAborted = true;
+					// R2-10: close child stdin before SIGTERM so children that
+					// ignore SIGTERM but block on stdin reads don't dangle.
+					proc.stdin?.end();
 					proc.kill("SIGTERM");
 					sigkillTimer = setTimeout(() => {
 						if (!proc.killed) proc.kill("SIGKILL");
@@ -589,6 +600,46 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 				if (signal.aborted) killProc();
 				else signal.addEventListener("abort", killProc, { once: true });
 			}
+
+			proc.on("close", (code, closeSignal) => {
+				if (sigkillTimer) {
+					clearTimeout(sigkillTimer);
+					sigkillTimer = null;
+				}
+				// R2-7: remove the abort listener so it doesn't accumulate
+				// across spawns on a long-lived parent AbortSignal.
+				if (killProc && signal) {
+					signal.removeEventListener("abort", killProc);
+				}
+				if (buffer.trim()) processLine(buffer, processCtx);
+				// R2-3: signal-killed processes must not be reported as exit 0.
+				// When a child is killed by SIGTERM/SIGKILL (abort, OOM, shell
+				// death), `code` is null and `closeSignal` is the signal name.
+				// Returning 0 would mark a killed child as "success", hiding
+				// failures from the orchestrator. Use 128+signo (the shell
+				// convention) so isFailedSpawnResult correctly marks it failed.
+				if (code !== null) {
+					resolve(code);
+				} else if (closeSignal) {
+					const signo = signalToNumber(closeSignal);
+					resolve(128 + signo);
+				} else {
+					resolve(1);
+				}
+			});
+
+			proc.on("error", (err: NodeJS.ErrnoException) => {
+				if (sigkillTimer) {
+					clearTimeout(sigkillTimer);
+					sigkillTimer = null;
+				}
+				if (killProc && signal) {
+					signal.removeEventListener("abort", killProc);
+				}
+				// Preserve the spawn error message so callers see WHY it failed.
+				result.stderr += `\n[agent-tool] spawn error: ${err.message}\n`;
+				resolve(1);
+			});
 		});
 
 		result.stderr = stderrBuffer + (result.stderr ? result.stderr : "");
@@ -652,8 +703,39 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 }
 
 /**
+ * R2-5: Validate that a defaultProvider value from settings.json is a
+ * legitimate provider name, not a URL or other injected string. Corrupted
+ * or malicious settings (`{"defaultProvider":"http://attacker..."}`) must
+ * not be passed to `--provider` unchecked.
+ *
+ * A valid provider name is a short identifier (letters, digits, hyphens,
+ * underscores, dots) that does NOT contain a scheme prefix (`://`), a
+ * leading `//`, or whitespace. This matches all KnownProvider values
+ * (e.g. "openai", "anthropic", "google-vertex", "zai-coding-cn") while
+ * rejecting URLs and obviously malformed strings.
+ */
+function isValidProviderName(name: string): boolean {
+	if (!name || typeof name !== "string") return false;
+	if (name.length === 0 || name.length > 100) return false;
+	// Reject URLs and scheme-prefixed strings.
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(name)) return false;
+	if (name.startsWith("//")) return false;
+	if (name.includes("://")) return false;
+	// Reject whitespace.
+	if (/\s/.test(name)) return false;
+	// Must be an identifier-like string (allow letters, digits, hyphens,
+	// underscores, dots).
+	if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) return false;
+	return true;
+}
+
+/**
  * Read defaultProvider from settings.json (~/.pi/settings.json). The child
  * pi's model resolver is pinned to this provider via `--provider`.
+ *
+ * R2-5: the value is validated by `isValidProviderName` before being
+ * returned. An invalid value (e.g. a URL) is rejected with a warning and
+ * the function returns `undefined` (no `--provider` flag passed).
  */
 function readDefaultProvider(): string | undefined {
 	try {
@@ -661,6 +743,18 @@ function readDefaultProvider(): string | undefined {
 		const raw = fs.readFileSync(settingsPath, "utf-8");
 		const parsed = JSON.parse(raw);
 		if (parsed.defaultProvider && typeof parsed.defaultProvider === "string") {
+			if (!isValidProviderName(parsed.defaultProvider)) {
+				const quietFlag = process.env.PI_QUIET;
+				const quiet =
+					quietFlag === "1" || quietFlag?.toLowerCase() === "true" || quietFlag?.toLowerCase() === "yes";
+				if (!quiet) {
+					// eslint-disable-next-line no-console
+					console.warn(
+						`[subagent] ignoring invalid defaultProvider "${parsed.defaultProvider}" — not a valid provider name (URLs and malformed strings are rejected)`,
+					);
+				}
+				return undefined;
+			}
 			return parsed.defaultProvider;
 		}
 	} catch {
@@ -669,21 +763,22 @@ function readDefaultProvider(): string | undefined {
 	return undefined;
 }
 
-const V2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
-
-const BASE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-const V2_TOOL_NAMES = ["Agent", "Skill", "AskUserQuestion", "WebFetch", "WebSearch"];
+/**
+ * R2-6: single source of truth for all registered tool names. Previously
+ * BASE_TOOL_NAMES + V2_TOOL_NAMES were hardcoded here AND in index.ts,
+ * causing drift when tools were added/removed. Now we import the canonical
+ * list from index.ts. The circular import (index.ts → agent-tool.ts →
+ * index.ts) is safe because `allToolNames` is a live ESM binding accessed
+ * only at call time (inside execute), by which point index.ts has fully
+ * initialized.
+ */
 
 /**
  * Return the list of all registered tool names for the current runtime
  * (matches the set produced by createAllToolDefinitions in index.ts).
- *
- * Used by the Agent tool's execute() to resolve `--tools` for the spawned
- * child. We compute this locally rather than importing from index.ts to
- * avoid a circular import (index.ts imports from agent-tool.ts).
  */
 function getAllRegisteredToolNames(): string[] {
-	return V2 ? [...BASE_TOOL_NAMES, ...V2_TOOL_NAMES] : BASE_TOOL_NAMES;
+	return Array.from(allToolNames);
 }
 
 // ---------------------------------------------------------------------------
@@ -774,12 +869,17 @@ export function createAgentToolDefinition(
 
 			// R1: Construct onAskUserQuestion callback based on available UI.
 			// - ctx.hasUI && ctx.ui: render each question via ctx.ui.select (TUI).
-			// - No TUI but stdin is a pipe (spawned child): re-emit event to
-			//   process.stdout so the grandparent can handle it, then await the
-			//   response via deliverAskUserQuestionResponse.
-			// - Neither: throw — child will time out. This is the only legitimate
-			//   error path; silent degrade is forbidden (fc-spec-writer depends on
-			//   asking questions).
+			// - No TUI: re-emit event to process.stdout so the grandparent (or
+			//   stdin EOF) can handle it, then await the response.
+			//
+			// R2-9: previously the bubble-up handler was only installed when
+			// `!process.stdin.isTTY` (i.e. spawned as a child). But top-level
+			// interactive pi without a UI bound (`hasUI=false`, `isTTY=true`)
+			// would skip the handler entirely, causing any child AskUserQuestion
+			// to silently time out. There is no correct "drop the question"
+			// scenario — if there's no TUI, always install the bubble-up
+			// handler. In the pipe case the grandparent handles it; in the TTY
+			// case, stdin EOF will eventually terminate the pending question.
 			let onAskUserQuestion:
 				| ((evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>)
 				| undefined;
@@ -801,8 +901,8 @@ export function createAgentToolDefinition(
 					}
 					return answers;
 				};
-			} else if (!process.stdin.isTTY) {
-				// Bubble-up: re-emit to stdout, wait for grandparent's response.
+			} else {
+				// R2-9: always install bubble-up handler when no TUI is available.
 				onAskUserQuestion = async (evt) => {
 					process.stdout.write(
 						encodeEvent({
@@ -814,8 +914,6 @@ export function createAgentToolDefinition(
 					return awaitAskUserQuestionResponse(evt.id);
 				};
 			}
-			// else: no TUI and stdin is TTY — no handler. Child will time out.
-			// This is the "neither TUI nor bubble-up" error path.
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -850,6 +948,45 @@ export function createAgentToolDefinition(
 				);
 			};
 
+			// R2-8: wrap resolveAgent in try/catch for parallel/chain modes.
+			// A single typo'd agent name in one step should fail THAT step
+			// only, not abort all siblings or discard partial successes. The
+			// thrown error is synthesized into a SingleSpawnResult with
+			// exitCode:1 so it flows through the standard isFailedSpawnResult /
+			// getResultOutput reporting path.
+			const resolveAgentOrFailure = (name?: string): { agent: AgentConfig; failure?: string } => {
+				try {
+					return { agent: resolveAgent(name) };
+				} catch (e) {
+					return {
+						agent: {
+							name: name ?? "(unknown)",
+							description: "",
+							systemPrompt: "",
+							source: "user",
+							filePath: "",
+						},
+						failure: (e as Error).message,
+					};
+				}
+			};
+
+			const makeFailureResult = (
+				agentName: string,
+				source: AgentConfig["source"],
+				taskText: string,
+				failure: string,
+				step?: number,
+			): SingleSpawnResult => ({
+				agent: agentName,
+				agentSource: source,
+				task: taskText,
+				exitCode: 1,
+				messages: [],
+				stderr: failure,
+				step,
+			});
+
 			const spawnOpts = (
 				agentCfg: AgentConfig,
 				task: string,
@@ -874,9 +1011,20 @@ export function createAgentToolDefinition(
 				let previousOutput = "";
 				for (let i = 0; i < params.chain.length; i++) {
 					const step = params.chain[i];
-					const taskText = (step.prompt ?? step.task ?? "").replace(/\{previous\}/g, previousOutput);
-					const agentCfg = resolveAgent(step.subagent_type ?? step.agent);
-					const result = await runOneAgentSpawn(spawnOpts(agentCfg, taskText, step.cwd ?? ctx.cwd, i + 1));
+					// R2-11: use function-form replace to avoid $-escape
+					// interpretation. `previousOutput` containing `$&`, `$1`,
+					// etc. would be misinterpreted by String.replace's special
+					// replacement patterns. The function form returns the
+					// literal string.
+					const taskText = (step.prompt ?? step.task ?? "").replace(/\{previous\}/g, () => previousOutput);
+					// R2-8: catch resolveAgent failures per-step.
+					const { agent: agentCfg, failure } = resolveAgentOrFailure(step.subagent_type ?? step.agent);
+					let result: SingleSpawnResult;
+					if (failure) {
+						result = makeFailureResult(agentCfg.name, agentCfg.source, taskText, failure, i + 1);
+					} else {
+						result = await runOneAgentSpawn(spawnOpts(agentCfg, taskText, step.cwd ?? ctx.cwd, i + 1));
+					}
 					results.push(result);
 					if (isFailedSpawnResult(result)) {
 						return {
@@ -906,18 +1054,37 @@ export function createAgentToolDefinition(
 			// Parallel mode: bounded concurrency.
 			if (hasTasks && params.tasks) {
 				if (params.tasks.length > MAX_PARALLEL_TASKS) {
+					// R2-12: mark as error and include a synthesized result so
+					// orchestrator verdict parsers don't see an empty success.
+					const overflowResult = makeFailureResult(
+						"(overflow)",
+						"user",
+						"",
+						`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+					);
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+								text: overflowResult.stderr,
 							},
 						],
-						details: { mode: "parallel", results: [] },
+						details: { mode: "parallel", results: [overflowResult] },
+						isError: true,
 					};
 				}
 				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-					const agentCfg = resolveAgent(t.subagent_type ?? t.agent);
+					// R2-8: catch resolveAgent failures per-task.
+					const { agent: agentCfg, failure } = resolveAgentOrFailure(t.subagent_type ?? t.agent);
+					if (failure) {
+						return makeFailureResult(
+							agentCfg.name,
+							agentCfg.source,
+							t.prompt ?? t.task ?? "",
+							failure,
+							index + 1,
+						);
+					}
 					const taskText = t.prompt ?? t.task ?? "";
 					return runOneAgentSpawn(spawnOpts(agentCfg, taskText, t.cwd ?? ctx.cwd, index + 1));
 				});

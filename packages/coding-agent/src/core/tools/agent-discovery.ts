@@ -201,6 +201,40 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
 		const filePath = path.join(dir, entry.name);
+
+		// R2-2: symlink escape guard. Resolve symlinks and reject any whose
+		// target falls outside the agents directory. Without this, a malicious
+		// `.pi/agents/evil.md` symlinked to `/etc/passwd` or `~/.ssh/id_rsa`
+		// would have its body loaded into `systemPrompt` and handed to the
+		// model. We use lstatSync to detect symlinks (Dirent.isSymbolicLink
+		// also works, but lstatSync gives us the resolved path for the
+		// boundary check).
+		if (entry.isSymbolicLink()) {
+			let resolved: string;
+			try {
+				resolved = fs.realpathSync(filePath);
+			} catch {
+				// Broken symlink — skip silently.
+				continue;
+			}
+			const rel = path.relative(dir, resolved);
+			// rel === "" means the symlink points to the dir itself (weird).
+			// rel.startsWith("..") means the target escapes the agents dir.
+			// path.isAbsolute(rel) handles edge cases on Windows.
+			if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+				const quietFlag = process.env.PI_QUIET;
+				const quiet =
+					quietFlag === "1" || quietFlag?.toLowerCase() === "true" || quietFlag?.toLowerCase() === "yes";
+				if (!quiet) {
+					// eslint-disable-next-line no-console
+					console.warn(
+						`[subagent] skipping symlink "${entry.name}" — target resolves outside the agents directory`,
+					);
+				}
+				continue;
+			}
+		}
+
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
@@ -216,14 +250,37 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const rawTools =
-			typeof frontmatter.tools === "string"
-				? frontmatter.tools
-						.split(",")
-						.map((t: string) => t.trim())
-						.filter(Boolean)
-				: [];
-		const tools = rawTools.length > 0 ? normalizeToolNames(rawTools) : undefined;
+		// R2-1: accept YAML array form of `tools` (e.g. `tools:\n  - read\n  - bash`).
+		// Previously only `typeof frontmatter.tools === "string"` was recognized;
+		// array-form `tools` was silently dropped to `[]` → `undefined` (wildcard),
+		// inverting the fail-safe contract.
+		//
+		// Fail-safe contract for empty declarations:
+		//   - No `tools:` key at all, or `tools: ""` (empty string) → `undefined`
+		//     (child inherits platform defaults). This preserves backward compat
+		//     for string-form declarations.
+		//   - `tools: []` (explicit empty array) → `[]` (fail-safe, child runs
+		//     with NO tools). An author who writes an empty array explicitly
+		//     opts out of all tools; collapsing to wildcard would be a privilege
+		//     expansion.
+		//   - `tools: [UnknownTool]` → `[]` (all unmappable → fail-safe).
+		let tools: string[] | undefined;
+		if (Array.isArray(frontmatter.tools)) {
+			const rawTools = frontmatter.tools.map((t: unknown) => String(t).trim()).filter(Boolean);
+			const normalized = normalizeToolNames(rawTools);
+			// Explicit array declaration: even if normalizeToolNames returns
+			// undefined (no mappable names), return [] (fail-safe) rather than
+			// undefined (wildcard).
+			tools = normalized ?? [];
+		} else if (typeof frontmatter.tools === "string") {
+			const rawTools = frontmatter.tools
+				.split(",")
+				.map((t: string) => t.trim())
+				.filter(Boolean);
+			tools = rawTools.length > 0 ? normalizeToolNames(rawTools) : undefined;
+		} else {
+			tools = undefined;
+		}
 
 		const splitList = (value: unknown): string[] | undefined => {
 			if (typeof value !== "string") return undefined;

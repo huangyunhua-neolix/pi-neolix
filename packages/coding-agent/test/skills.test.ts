@@ -437,10 +437,7 @@ describe("skills", () => {
 			const result = loadSkills({
 				cwd: homedir(),
 				agentDir: collisionFixturesDir,
-				skillPaths: [
-					join(collisionFixturesDir, "first"),
-					join(collisionFixturesDir, "second"),
-				],
+				skillPaths: [join(collisionFixturesDir, "first"), join(collisionFixturesDir, "second")],
 				includeDefaults: false,
 			});
 
