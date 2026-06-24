@@ -7,13 +7,16 @@ import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
 import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
+	allToolNames,
+	createAllToolDefinitions,
 	createEditTool,
 	createFindTool,
 	createGrepTool,
 	createLsTool,
 	createReadTool,
 	createWriteTool,
-} from "../src/index.ts";
+	type ToolName,
+} from "../src/core/tools/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
 const readTool = createReadTool(process.cwd());
@@ -1175,5 +1178,46 @@ describe("edit tool CRLF handling", () => {
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("\uFEFFfirst\r\nSECOND\r\nthird\r\nFOURTH\r\n");
+	});
+});
+
+describe("tool registry V2 flag (PI_AGENT_RUNTIME_V2)", () => {
+	const V2_TOOL_NAMES = ["Agent", "Skill", "AskUserQuestion", "WebFetch", "WebSearch"] as const;
+	const BASE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+	it("exposes the expected tool set based on PI_AGENT_RUNTIME_V2 at module load", () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+
+		if (v2) {
+			expect(allToolNames.size).toBe(12);
+			for (const name of V2_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(true);
+			}
+			for (const name of BASE_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(true);
+			}
+
+			const defs = createAllToolDefinitions(process.cwd());
+			const keys = Object.keys(defs);
+			expect(keys.length).toBe(12);
+			for (const name of V2_TOOL_NAMES) {
+				expect(keys).toContain(name);
+			}
+		} else {
+			expect(allToolNames.size).toBe(7);
+			for (const name of V2_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(false);
+			}
+			for (const name of BASE_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(true);
+			}
+
+			const defs = createAllToolDefinitions(process.cwd());
+			const keys = Object.keys(defs);
+			expect(keys.length).toBe(7);
+			for (const name of V2_TOOL_NAMES) {
+				expect(keys).not.toContain(name);
+			}
+		}
 	});
 });

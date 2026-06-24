@@ -2460,6 +2460,13 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
+		// When PI_AGENT_RUNTIME_V2=1, createAllToolDefinitions includes the 5 V2
+		// tools (Agent, Skill, AskUserQuestion, WebFetch, WebSearch), so the
+		// _baseToolDefinitions map picks them up automatically here. The default
+		// active set stays ["read","bash","edit","write"] to match sdk.ts — V2
+		// tools are only activated when an agent frontmatter or the caller
+		// explicitly opts in (spec §4.1.3: wildcard spawn does not depend on
+		// this default, but the two hardcoded lists must stay in sync).
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
 			: ["read", "bash", "edit", "write"];

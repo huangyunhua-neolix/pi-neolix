@@ -7,6 +7,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
+const V2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+
 export type AgentScope = "user" | "project" | "both";
 
 export interface AgentConfig {
@@ -230,18 +232,26 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			systemPrompt: body,
 			source,
 			filePath,
-			color: splitList(frontmatter.color),
-			skills: splitList(frontmatter.skills),
-			effort: typeof frontmatter.effort === "string" ? frontmatter.effort : undefined,
-			permissionMode: typeof frontmatter.permissionMode === "string" ? frontmatter.permissionMode : undefined,
-			isolation: typeof frontmatter.isolation === "string" ? frontmatter.isolation : undefined,
-			maxTurns,
-			disallowedTools: splitList(frontmatter.disallowedTools),
-			initialPrompt: typeof frontmatter.initialPrompt === "string" ? frontmatter.initialPrompt : undefined,
-			background: frontmatter.background,
-			memory: frontmatter.memory,
-			hooks: frontmatter.hooks,
-			mcpServers: frontmatter.mcpServers,
+			// V2-gated extended frontmatter fields. When PI_AGENT_RUNTIME_V2 is
+			// off, only the base four (name/description/tools/model) are parsed
+			// so flag-off runs match the pre-V2 agent shape exactly.
+			...(V2
+				? {
+						color: splitList(frontmatter.color),
+						skills: splitList(frontmatter.skills),
+						effort: typeof frontmatter.effort === "string" ? frontmatter.effort : undefined,
+						permissionMode:
+							typeof frontmatter.permissionMode === "string" ? frontmatter.permissionMode : undefined,
+						isolation: typeof frontmatter.isolation === "string" ? frontmatter.isolation : undefined,
+						maxTurns,
+						disallowedTools: splitList(frontmatter.disallowedTools),
+						initialPrompt: typeof frontmatter.initialPrompt === "string" ? frontmatter.initialPrompt : undefined,
+						background: frontmatter.background,
+						memory: frontmatter.memory,
+						hooks: frontmatter.hooks,
+						mcpServers: frontmatter.mcpServers,
+					}
+				: {}),
 		});
 	}
 
