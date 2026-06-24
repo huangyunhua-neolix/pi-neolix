@@ -1336,6 +1336,17 @@ export class InteractiveMode {
 		showDiagnosticsWhenQuiet?: boolean;
 	}): void {
 		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+		// PI_QUIET=1 (accepts 1/true/yes, case-insensitive, like other PI_* flags)
+		// suppresses the *informational* startup diagnostics blocks
+		// ([Skill conflicts], [Prompt conflicts], [Extension issues], [Theme
+		// conflicts]) by dropping their warning/collision entries. Real errors
+		// (type "error", e.g. a failed extension load) ALWAYS surface regardless of
+		// PI_QUIET, so a genuine failure is never hidden behind a "quiet" flag. The
+		// control flow below is identical to the PI_QUIET-unset path — PI_QUIET only
+		// filters entries, it never changes whether a block is entered.
+		const quietFlag = process.env.PI_QUIET;
+		const quietDiagnostics =
+			quietFlag === "1" || quietFlag?.toLowerCase() === "true" || quietFlag?.toLowerCase() === "yes";
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
 			return;
@@ -1479,22 +1490,22 @@ export class InteractiveMode {
 			}
 		}
 
-		if (showDiagnostics) {
-			const skillDiagnostics = skillsResult.diagnostics;
-			if (skillDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
-				this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
-				this.chatContainer.addChild(new Spacer(1));
-			}
+		// Render a diagnostics block. Under PI_QUIET only real errors (type "error",
+		// e.g. a failed extension load) are kept; informational conflicts
+		// (warning/collision) are dropped. Without this filter, gating the whole
+		// `showDiagnostics` block on PI_QUIET would also hide extension load errors.
+		const renderDiagnosticsBlock = (label: string, diags: ResourceDiagnostic[]): void => {
+			const visible = quietDiagnostics ? diags.filter((d) => d.type === "error") : diags;
+			if (visible.length === 0) return;
+			const lines = this.formatDiagnostics(visible, sourceInfos);
+			this.chatContainer.addChild(new Text(`${theme.fg("warning", label)}\n${lines}`, 0, 0));
+			this.chatContainer.addChild(new Spacer(1));
+		};
 
-			const promptDiagnostics = promptsResult.diagnostics;
-			if (promptDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(promptDiagnostics, sourceInfos);
-				this.chatContainer.addChild(
-					new Text(`${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines}`, 0, 0),
-				);
-				this.chatContainer.addChild(new Spacer(1));
-			}
+		if (showDiagnostics) {
+			renderDiagnosticsBlock("[Skill conflicts]", skillsResult.diagnostics);
+
+			renderDiagnosticsBlock("[Prompt conflicts]", promptsResult.diagnostics);
 
 			const extensionDiagnostics: ResourceDiagnostic[] = [];
 			const extensionErrors = this.session.resourceLoader.getExtensions().errors;
@@ -1504,27 +1515,12 @@ export class InteractiveMode {
 				}
 			}
 
-			const commandDiagnostics = this.session.extensionRunner.getCommandDiagnostics();
-			extensionDiagnostics.push(...commandDiagnostics);
+			extensionDiagnostics.push(...this.session.extensionRunner.getCommandDiagnostics());
 			extensionDiagnostics.push(...this.getBuiltInCommandConflictDiagnostics(this.session.extensionRunner));
+			extensionDiagnostics.push(...this.session.extensionRunner.getShortcutDiagnostics());
+			renderDiagnosticsBlock("[Extension issues]", extensionDiagnostics);
 
-			const shortcutDiagnostics = this.session.extensionRunner.getShortcutDiagnostics();
-			extensionDiagnostics.push(...shortcutDiagnostics);
-
-			if (extensionDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(extensionDiagnostics, sourceInfos);
-				this.chatContainer.addChild(
-					new Text(`${theme.fg("warning", "[Extension issues]")}\n${warningLines}`, 0, 0),
-				);
-				this.chatContainer.addChild(new Spacer(1));
-			}
-
-			const themeDiagnostics = themesResult.diagnostics;
-			if (themeDiagnostics.length > 0) {
-				const warningLines = this.formatDiagnostics(themeDiagnostics, sourceInfos);
-				this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Theme conflicts]")}\n${warningLines}`, 0, 0));
-				this.chatContainer.addChild(new Spacer(1));
-			}
+			renderDiagnosticsBlock("[Theme conflicts]", themesResult.diagnostics);
 		}
 	}
 

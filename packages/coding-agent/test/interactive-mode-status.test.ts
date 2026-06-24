@@ -1061,4 +1061,97 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Skill conflicts]");
 		expect(output).not.toContain("[Skills]");
 	});
+
+	test("PI_QUIET suppresses [Skill conflicts] even when showDiagnosticsWhenQuiet is true", () => {
+		const prev = process.env.PI_QUIET;
+		process.env.PI_QUIET = "1";
+		try {
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: true,
+				skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+				skillDiagnostics: [{ type: "warning", message: "duplicate skill name" }],
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+				force: false,
+				showDiagnosticsWhenQuiet: true,
+			});
+
+			const output = renderAll(fakeThis.chatContainer);
+			expect(output).not.toContain("[Skill conflicts]");
+		} finally {
+			if (prev === undefined) delete process.env.PI_QUIET;
+			else process.env.PI_QUIET = prev;
+		}
+	});
+
+	test("PI_QUIET still surfaces type:error diagnostics", () => {
+		const prev = process.env.PI_QUIET;
+		process.env.PI_QUIET = "1";
+		try {
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: true,
+				skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+				// A real error (e.g. failed parse) must NOT be hidden by PI_QUIET.
+				skillDiagnostics: [{ type: "error", message: "skill failed to parse" }],
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+				force: false,
+				showDiagnosticsWhenQuiet: true,
+			});
+
+			const output = renderAll(fakeThis.chatContainer);
+			expect(output).toContain("[Skill conflicts]");
+		} finally {
+			if (prev === undefined) delete process.env.PI_QUIET;
+			else process.env.PI_QUIET = prev;
+		}
+	});
+
+	test("PI_QUIET does not affect the verbose resource listing", () => {
+		const prev = process.env.PI_QUIET;
+		process.env.PI_QUIET = "1";
+		try {
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: false,
+				skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+
+			const output = renderAll(fakeThis.chatContainer);
+			// Listing survives PI_QUIET — it only filters diagnostics, not the listing.
+			expect(output).toContain("[Skills]");
+			expect(output).not.toContain("[Skill conflicts]");
+		} finally {
+			if (prev === undefined) delete process.env.PI_QUIET;
+			else process.env.PI_QUIET = prev;
+		}
+	});
+
+	test("PI_QUIET accepts true / yes / case-insensitive variants", () => {
+		for (const value of ["true", "TRUE", "yes", "Yes"]) {
+			const prev = process.env.PI_QUIET;
+			process.env.PI_QUIET = value;
+			try {
+				const fakeThis = createShowLoadedResourcesThis({
+					quietStartup: true,
+					skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+					skillDiagnostics: [{ type: "warning", message: "duplicate skill name" }],
+				});
+
+				(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+					force: false,
+					showDiagnosticsWhenQuiet: true,
+				});
+
+				const output = renderAll(fakeThis.chatContainer);
+				expect(output).not.toContain("[Skill conflicts]");
+			} finally {
+				if (prev === undefined) delete process.env.PI_QUIET;
+				else process.env.PI_QUIET = prev;
+			}
+		}
+	});
 });

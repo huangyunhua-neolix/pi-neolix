@@ -89,7 +89,13 @@ export function normalizeToolNames(names: string[]): string[] | undefined {
 			dropped.push(raw.trim());
 		}
 	}
-	if (dropped.length > 0) {
+	// PI_QUIET=1 suppresses informational startup diagnostics. End users running
+	// shared Claude Code / freecode agent files don't need the cross-CLI gap
+	// report; agent authors can leave PI_QUIET unset (or `export PI_QUIET=`) to
+	// see it. Accepts 1 / true / yes (case-insensitive), matching other PI_* flags.
+	const quietFlag = process.env.PI_QUIET;
+	const quiet = quietFlag === "1" || quietFlag?.toLowerCase() === "true" || quietFlag?.toLowerCase() === "yes";
+	if (dropped.length > 0 && !quiet) {
 		// eslint-disable-next-line no-console
 		console.warn(
 			`[subagent] dropped ${dropped.length} tool(s) with no pi equivalent: ${dropped.join(", ")}. ` +
