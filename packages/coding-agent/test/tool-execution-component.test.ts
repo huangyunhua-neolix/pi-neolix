@@ -364,6 +364,58 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("done");
 	});
 
+	test("falls back when renderCall returns undefined instead of crashing", () => {
+		// Regression: a renderer returning undefined was pushed into contentBox via
+		// addChild(component) without a null-check, so Box.render threw on
+		// `child.render` of undefined and killed the process. The guard must fall
+		// back to createCallFallback and render without throwing.
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderCall: () => undefined as any,
+		};
+
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-undef-call",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		expect(() => component.render(120)).not.toThrow();
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		// createCallFallback renders the tool name.
+		expect(rendered).toContain("custom_tool");
+	});
+
+	test("falls back when renderResult returns undefined instead of crashing", () => {
+		// Regression: same ingress via the result renderer path.
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderCall: () => new Text("custom call", 0, 0),
+			renderResult: () => undefined as any,
+		};
+
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-undef-result",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{ content: [{ type: "text", text: "result-output" }], details: {}, isError: false },
+			false,
+		);
+		expect(() => component.render(120)).not.toThrow();
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		// createResultFallback renders the result text output.
+		expect(rendered).toContain("result-output");
+	});
+
 	test("trims trailing blank display lines from write previews", () => {
 		const component = new ToolExecutionComponent(
 			"write",

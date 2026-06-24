@@ -276,6 +276,15 @@ export default function (pi: ExtensionAPI) {
 
 				case "clear":
 					return new Text(theme.fg("success", "✓ ") + theme.fg("muted", "Cleared all todos"), 0, 0);
+
+				default: {
+					// Unknown/missing action (e.g. malformed args produced an empty
+					// details object from createErrorToolResult). Return the result text
+					// so we never return undefined — an undefined component would be
+					// pushed into contentBox and crash Box.render (child.render).
+					const text = result.content[0];
+					return new Text(text?.type === "text" ? text.text : "", 0, 0);
+				}
 			}
 		},
 	});
