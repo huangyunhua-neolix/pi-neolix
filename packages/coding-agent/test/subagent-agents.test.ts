@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { discoverAgents } from "../examples/extensions/subagent/agents.ts";
+import { discoverAgents, normalizeToolNames } from "../examples/extensions/subagent/agents.ts";
 
 /**
  * discoverAgents reads from two user roots:
@@ -122,6 +122,60 @@ describe("discoverAgents — ~/.claude/agents user root", () => {
 		try {
 			const { agents } = discoverAgents(join(dir, "cwd"), "user");
 			expect(agents.map((a) => a.name)).toEqual(["valid"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
+	it("maps PascalCase Claude Code names to pi's lowercase registry", () => {
+		expect(normalizeToolNames(["Read", "Grep", "Glob", "Bash", "Edit", "Write"])).toEqual(
+			expect.arrayContaining(["read", "grep", "find", "bash", "edit", "write"]),
+		);
+	});
+
+	it("is case-insensitive", () => {
+		expect(normalizeToolNames(["READ", "Grep"])).toEqual(expect.arrayContaining(["read", "grep"]));
+	});
+
+	it("drops names that have no pi equivalent (AskUserQuestion, Skill, Task, WebFetch)", () => {
+		const result = normalizeToolNames(["Read", "AskUserQuestion", "Skill", "Task", "WebFetch", "Grep"]);
+		expect(result).toEqual(expect.arrayContaining(["read", "grep"]));
+		expect(result).not.toContain("askuserquestion");
+		expect(result).not.toContain("skill");
+	});
+
+	it("returns undefined when no declared tools map to pi", () => {
+		expect(normalizeToolNames(["AskUserQuestion", "Skill", "TodoWrite"])).toBeUndefined();
+	});
+
+	it("returns undefined for an empty list", () => {
+		expect(normalizeToolNames([])).toBeUndefined();
+		expect(normalizeToolNames(["", "  "])).toBeUndefined();
+	});
+
+	it("dedupes when Glob and Find both map to find", () => {
+		const result = normalizeToolNames(["Glob", "find"]);
+		expect(result).toEqual(["find"]);
+	});
+
+	it("end-to-end: an agent file with Claude Code tool names is normalized on discovery", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-tools-"));
+		const claudeAgents = join(dir, ".claude", "agents");
+		mkdirSync(claudeAgents, { recursive: true });
+		writeFileSync(
+			join(claudeAgents, "reviewer.md"),
+			"---\nname: reviewer\ndescription: review\ntools: Read, Grep, Glob, AskUserQuestion, Skill\n---\nbody\n",
+		);
+		delete process.env.PI_CODING_AGENT_DIR;
+		withHome(dir);
+		try {
+			const { agents } = discoverAgents(join(dir, "cwd"), "user");
+			expect(agents).toHaveLength(1);
+			expect(agents[0].tools).toEqual(expect.arrayContaining(["read", "grep", "find"]));
+			expect(agents[0].tools).not.toContain("AskUserQuestion");
+			expect(agents[0].tools).not.toContain("Skill");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

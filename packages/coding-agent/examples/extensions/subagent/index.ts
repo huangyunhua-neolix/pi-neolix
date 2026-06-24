@@ -1154,8 +1154,12 @@ function registerAgentSlashCommands(pi: ExtensionAPI): void {
 
 				const output = getFinalOutput(result.messages).trim() || "(no output)";
 				// Surface the agent's answer as a user-visible message so it renders
-				// inline and is captured by the session transcript.
-				ctx.sendMessage({
+				// inline and is captured by the session transcript. sendMessage lives
+				// on the top-level ExtensionAPI (`pi`), not on the command ctx — the
+				// ctx-level sendMessage was removed when command handlers were scoped
+				// to ExtensionCommandContext (sendMessage is now only on
+				// ReplacedSessionContext, used inside withSession() callbacks).
+				pi.sendMessage({
 					customType: "subagent-result",
 					content: output,
 					display: true,

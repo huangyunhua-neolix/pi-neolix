@@ -24,6 +24,49 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
+/**
+ * pi's built-in tool names (lowercase): bash, edit, find, grep, ls, read, write.
+ * Agent files shared with Claude Code / freecode use PascalCase names
+ * (Read, Grep, Glob, Bash, Edit, Write, AskUserQuestion, Skill, Task, ...).
+ * pi's `--tools` filter silently drops unknown names (see setActiveToolsByName
+ * in agent-session.ts), so without normalization every declared tool would be
+ * discarded and the subagent would fall back to the default tool set — ignoring
+ * the frontmatter's intent entirely.
+ *
+ * This maps the Claude Code aliases onto pi's names and drops the ones that have
+ * no pi equivalent (AskUserQuestion, Skill, Task, WebFetch, WebSearch, ...).
+ * The list is intentionally exhaustive on the read/write/search/exec axis so a
+ * shared agent file works on both CLIs.
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+	read: "read",
+	grep: "grep",
+	glob: "find", // Claude Code's file-pattern search ↔ pi's find
+	find: "find",
+	ls: "ls",
+	bash: "bash",
+	edit: "edit",
+	write: "write",
+};
+
+/**
+ * Normalize a list of tool names from agent frontmatter to pi's registered names.
+ * Case-insensitive; unknown names are silently dropped (pi has no equivalent).
+ * Returns undefined when normalization leaves no usable tools, so the caller
+ * can let the subagent fall back to its default tool set rather than running
+ * with an empty allowlist.
+ */
+export function normalizeToolNames(names: string[]): string[] | undefined {
+	const normalized = new Set<string>();
+	for (const raw of names) {
+		const key = raw.trim().toLowerCase();
+		if (!key) continue;
+		const mapped = TOOL_NAME_ALIASES[key];
+		if (mapped) normalized.add(mapped);
+	}
+	return normalized.size > 0 ? Array.from(normalized) : undefined;
+}
+
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
@@ -56,10 +99,11 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const tools = frontmatter.tools
+		const rawTools = frontmatter.tools
 			?.split(",")
 			.map((t: string) => t.trim())
 			.filter(Boolean);
+		const tools = rawTools && rawTools.length > 0 ? normalizeToolNames(rawTools) : undefined;
 
 		agents.push({
 			name: frontmatter.name,
