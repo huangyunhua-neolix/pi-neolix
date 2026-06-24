@@ -65,6 +65,39 @@ const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
+// ---------------------------------------------------------------------
+// Session-level agent switching ("/agent:<name>" switches the CURRENT
+// session into that agent's persona, instead of spawning a one-shot
+// non-interactive subprocess). See registerAgentSlashCommands + the
+// before_agent_start hook in the default export.
+// ---------------------------------------------------------------------
+interface ActiveAgentState {
+	agent: AgentConfig;
+	prevTools: string[];
+	prevSessionName: string | undefined;
+}
+let activeAgentState: ActiveAgentState | null = null;
+
+/**
+ * Preamble prepended to every turn while an agent is active, translating the
+ * agent's Claude-Code-oriented workflow into pi's interactive model. Without it,
+ * agents authored for Claude Code (e.g. full-cycle-dev) stall because they try
+ * to call AskUserQuestion / Agent(subagent_type) / Skill, none of which exist
+ * in pi. In an interactive pi session the model can just ask in plain text and
+ * dispatch via the `subagent` tool — this tells it so.
+ */
+function buildPiAdaptationPreamble(agentName: string): string {
+	return [
+		"=== PI INTERACTIVE-SESSION ADAPTATION (injected by /agent switch) ===",
+		`You are now running as the agent "${agentName}" inside a pi INTERACTIVE session (not a one-shot subprocess).`,
+		'- There is NO AskUserQuestion tool. When your workflow says "call AskUserQuestion" / "ask the user", ask the question in plain text and STOP (end your turn). The user will reply next turn; resume from there.',
+		'- There is NO Claude Code "Agent"/"Task" tool (no subagent_type) and NO "Skill" tool. To dispatch a specialist subagent, use the `subagent` tool: { agent: "<name>", task: "..." } (single), { tasks: [...] } (parallel), { chain: [...] } (sequential). Subagents you dispatch are one-shot and NON-interactive — give them fully self-contained tasks that require no user Q&A.',
+		'- pi built-in tools available: bash, read, edit, write, find, grep, ls, todo (unless your agent file restricted them).',
+		'- The user is present and sees your streaming output. Act interactively: ask, wait, proceed. Do NOT describe yourself as a one-shot subprocess.',
+		"=== END PI ADAPTATION ===",
+	].join("\n");
+}
+
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -1098,6 +1131,19 @@ export default function (pi: ExtensionAPI) {
 	// is built once at session start and must not depend on the project working
 	// directory. Project-local agents remain reachable via the `subagent` tool.
 	registerAgentSlashCommands(pi);
+
+	// Session-level agent switching: when a /agent:<name> command activates an
+	// agent, append that agent's system prompt to every turn's base prompt so
+	// subsequent commands run as that agent (interactive, not a one-shot child).
+	// When no agent is active, return undefined so agent-session resets to the
+	// base prompt (see agent-session.ts before_agent_start handling).
+	pi.on("before_agent_start", (event) => {
+		if (!activeAgentState) return;
+		const preamble = buildPiAdaptationPreamble(activeAgentState.agent.name);
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${preamble}\n\n${activeAgentState.agent.systemPrompt}`,
+		};
+	});
 }
 
 /**
@@ -1108,71 +1154,72 @@ export default function (pi: ExtensionAPI) {
  * reachable through the `subagent` tool (which already prompts for trust).
  */
 function registerAgentSlashCommands(pi: ExtensionAPI): void {
-	// user scope does not depend on cwd (project discovery is skipped), so a
-	// placeholder cwd is safe here.
-	const discovery = discoverAgents(process.cwd(), "user");
+	// /agent:<name> [task]  → switch the CURRENT session into that agent's
+	// persona (its system prompt is appended every turn via before_agent_start).
+	// /agent:off            → exit agent mode, restore base prompt + tools.
+	//
+	// Implemented via the `input` event (transform), NOT registered commands, so
+	// the task text flows into prompt()'s normal turn path and the turn runs
+	// synchronously — works in both -p and interactive, no microtask/
+	// sendUserMessage re-entrancy. before_agent_start (registered in the default
+	// export) injects the agent's system prompt for that and every later turn.
+	pi.on("input", (event, ctx) => {
+		const text = event.text ?? "";
+		if (!text.startsWith("/agent:")) return; // pass-through (action: continue)
 
-	// Render the agent's final answer inline as a markdown message.
-	pi.registerMessageRenderer("subagent-result", (message, _options, _theme) => {
-		const content = typeof message.content === "string" ? message.content : "";
-		return new Markdown(content, 0, 0, getMarkdownTheme());
+		const rest = text.slice("/agent:".length);
+		const sp = rest.indexOf(" ");
+		const name = (sp === -1 ? rest : rest.slice(0, sp)).trim();
+		const task = sp === -1 ? "" : rest.slice(sp + 1).trim();
+
+		// /agent:off — exit agent mode.
+		if (name === "off") {
+			if (!activeAgentState) {
+				ctx.ui.notify("Not in agent mode.", "warning");
+				return { action: "handled" as const };
+			}
+			const was = activeAgentState.agent.name;
+			pi.setActiveTools(activeAgentState.prevTools);
+			pi.setSessionName(activeAgentState.prevSessionName ?? "");
+			activeAgentState = null;
+			// Next turn's before_agent_start returns undefined → agent-session
+			// resets to the base system prompt automatically.
+			ctx.ui.notify(`Exited agent mode (was ${was}).`, "info");
+			return { action: "handled" as const };
+		}
+
+		// Re-discover at invocation time so renamed/added agents are picked up.
+		const current = discoverAgents(ctx.cwd, "user");
+		const agentCfg = current.agents.find((a) => a.name === name);
+		if (!agentCfg) {
+			const available = current.agents.map((a) => a.name).join(", ") || "none";
+			ctx.ui.notify(`Unknown agent: "${name}". Available: ${available}`, "error");
+			return { action: "handled" as const };
+		}
+
+		// Snapshot current tools + session name ONCE (before the first switch)
+		// so /agent:off restores them. Switching between agents keeps the
+		// original snapshot.
+		const prevTools = activeAgentState ? activeAgentState.prevTools : pi.getActiveTools();
+		const prevSessionName = activeAgentState ? activeAgentState.prevSessionName : pi.getSessionName();
+		activeAgentState = { agent: agentCfg, prevTools, prevSessionName };
+
+		// agent.tools contract (see normalizeToolNames in agents.ts):
+		//   undefined → inherit defaults (prevTools); [] → no tools; [...] → allowlist
+		if (agentCfg.tools) {
+			pi.setActiveTools(agentCfg.tools);
+		} else {
+			pi.setActiveTools(prevTools);
+		}
+		pi.setSessionName(`▸ ${agentCfg.name}`);
+
+		if (task) {
+			ctx.ui.notify(`Switched to agent: ${agentCfg.name}  ( /agent:off to exit )`, "info");
+			// Transform the input into the task text; prompt() then runs a normal
+			// turn with before_agent_start injecting the agent persona.
+			return { action: "transform" as const, text: task };
+		}
+		ctx.ui.notify(`Switched to agent: ${agentCfg.name}. Type your request.  ( /agent:off to exit )`, "info");
+		return { action: "handled" as const };
 	});
-
-	for (const agent of discovery.agents) {
-		const commandName = `agent:${agent.name}`;
-		pi.registerCommand(commandName, {
-			description: agent.description,
-			argumentHint: "<requirement>",
-			handler: async (args, ctx) => {
-				const task = args.trim();
-				if (!task) {
-					ctx.ui.notify(`Usage: /${commandName} <requirement>`, "warning");
-					return;
-				}
-
-				// Re-discover at invocation time so renamed/added agents are picked up.
-				const current = discoverAgents(ctx.cwd, "user");
-				const makeDetails = (results: SingleResult[]): SubagentDetails => ({
-					mode: "single",
-					agentScope: "user",
-					projectAgentsDir: current.projectAgentsDir,
-					results,
-				});
-
-				ctx.ui.notify(`Running agent: ${agent.name}…`, "info");
-				const result = await runSingleAgent(
-					ctx.cwd,
-					current.agents,
-					agent.name,
-					task,
-					ctx.cwd,
-					undefined,
-					undefined,
-					undefined,
-					makeDetails,
-					ctx.modelRegistry,
-					ctx.model,
-				);
-
-				if (isFailedResult(result)) {
-					const reason = result.stopReason ? ` (${result.stopReason})` : "";
-					ctx.ui.notify(`Agent ${agent.name} failed${reason}: ${getResultOutput(result)}`, "error");
-					return;
-				}
-
-				const output = getFinalOutput(result.messages).trim() || "(no output)";
-				// Surface the agent's answer as a user-visible message so it renders
-				// inline and is captured by the session transcript. sendMessage lives
-				// on the top-level ExtensionAPI (`pi`), not on the command ctx — the
-				// ctx-level sendMessage was removed when command handlers were scoped
-				// to ExtensionCommandContext (sendMessage is now only on
-				// ReplacedSessionContext, used inside withSession() callbacks).
-				pi.sendMessage({
-					customType: "subagent-result",
-					content: output,
-					display: true,
-				});
-			},
-		});
-	}
 }
