@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAgents, normalizeToolNames } from "../examples/extensions/subagent/agents.ts";
+import { discoverAgents, normalizeToolNames } from "../src/core/tools/agent-discovery.ts";
 
 /**
  * discoverAgents reads from two user roots:
@@ -311,10 +311,7 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-ws-"));
 		const claudeAgents = join(dir, ".claude", "agents");
 		mkdirSync(claudeAgents, { recursive: true });
-		writeFileSync(
-			join(claudeAgents, "ws.md"),
-			"---\nname: ws\ndescription: ws\ntools: \"   \"\n---\nbody\n",
-		);
+		writeFileSync(join(claudeAgents, "ws.md"), '---\nname: ws\ndescription: ws\ntools: "   "\n---\nbody\n');
 		delete process.env.PI_CODING_AGENT_DIR;
 		withHome(dir);
 		try {
