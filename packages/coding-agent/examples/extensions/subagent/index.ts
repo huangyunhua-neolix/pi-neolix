@@ -1120,17 +1120,17 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ---------------------------------------------------------------------
-	// /agent:<name> <requirement> slash commands
+	// /agent:<name> [task] session switch + /agent:off
 	// ---------------------------------------------------------------------
-	// Each discovered USER agent (from ~/.pi/agent/agents AND ~/.claude/agents)
-	// is exposed as a slash command so users can dispatch it directly from the
-	// input box, e.g. `/agent:code-reviewer review this diff`. The text after the
-	// command becomes the task delegated to the agent.
-	//
-	// Only user-scoped agents are registered as commands because the command list
-	// is built once at session start and must not depend on the project working
-	// directory. Project-local agents remain reachable via the `subagent` tool.
-	registerAgentSlashCommands(pi);
+	// A single `input` event handler (registered below) intercepts
+	// `/agent:<name> [task]` and `/agent:off` at invocation time — it re-discovers
+	// USER agents (from ~/.pi/agent/agents AND ~/.claude/agents), switches the
+	// CURRENT session into that agent's persona (system prompt appended every
+	// turn via the before_agent_start hook above), and transforms the input into
+	// the task text so prompt() runs a normal turn. No commands are registered;
+	// discovery happens per-invocation, not at session start. Project-local agents
+	// remain reachable via the `subagent` tool (one-shot, isolated subprocess).
+	registerAgentSwitchHandler(pi);
 
 	// Session-level agent switching: when a /agent:<name> command activates an
 	// agent, append that agent's system prompt to every turn's base prompt so
@@ -1147,13 +1147,15 @@ export default function (pi: ExtensionAPI) {
 }
 
 /**
- * Register one `/agent:<name>` slash command per discovered user agent.
- *
- * Project-local agents are intentionally excluded: the command palette is
- * session-global and must be stable regardless of cwd. Project agents stay
- * reachable through the `subagent` tool (which already prompts for trust).
+ * Register the `input` event handler that implements session-level agent
+ * switching: `/agent:<name> [task]` switches the current session into that
+ * agent's persona; `/agent:off` exits. User-scoped agents (from ~/.pi/agent/agents
+ * AND ~/.claude/agents) are re-discovered at invocation time. Project-local agents
+ * are intentionally excluded here (the switch surface is session-global); they
+ * remain reachable via the `subagent` tool (one-shot isolated subprocess, which
+ * already prompts for trust).
  */
-function registerAgentSlashCommands(pi: ExtensionAPI): void {
+function registerAgentSwitchHandler(pi: ExtensionAPI): void {
 	// /agent:<name> [task]  → switch the CURRENT session into that agent's
 	// persona (its system prompt is appended every turn via before_agent_start).
 	// /agent:off            → exit agent mode, restore base prompt + tools.
