@@ -51,20 +51,55 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 
 /**
  * Normalize a list of tool names from agent frontmatter to pi's registered names.
- * Case-insensitive; unknown names are silently dropped (pi has no equivalent).
- * Returns undefined when normalization leaves no usable tools, so the caller
- * can let the subagent fall back to its default tool set rather than running
- * with an empty allowlist.
+ * Case-insensitive; names with no pi equivalent (AskUserQuestion, Skill, Task,
+ * WebFetch, ...) are dropped.
+ *
+ * Return contract (intentional, security-relevant):
+ *   - `undefined` → the frontmatter declared no usable tools, OR no `tools:`
+ *     key at all. The caller passes no `--tools` flag and the subagent inherits
+ *     pi's default tool set. This is the "agent trusts the platform defaults"
+ *     case.
+ *   - `[]` (empty array) → the frontmatter DID declare tools, but every one of
+ *     them was unmappable (e.g. `tools: AskUserQuestion, Skill` — a restricted,
+ *     ask-only agent authored for Claude Code). Returning an empty allowlist
+ *     makes the spawned pi run with NO tools (fail-safe) instead of silently
+ *     inheriting full bash+write, which would invert the agent author's intent
+ *     ("restricted agent" → "unrestricted agent"). The caller passes
+ *     `--tools ""`, which `setActiveToolsByName` turns into an empty tool set.
+ *
+ * Without this distinction, a cross-CLI shared agent file that intentionally
+ * restricted tools to Claude-Code-only ones would gain unrestricted bash/write
+ * access under pi — a privilege expansion.
+ *
+ * Dropped names are warned to stderr so authors notice the gap.
  */
 export function normalizeToolNames(names: string[]): string[] | undefined {
 	const normalized = new Set<string>();
+	const dropped: string[] = [];
+	let declaredCount = 0;
 	for (const raw of names) {
 		const key = raw.trim().toLowerCase();
 		if (!key) continue;
+		declaredCount++;
 		const mapped = TOOL_NAME_ALIASES[key];
-		if (mapped) normalized.add(mapped);
+		if (mapped) {
+			normalized.add(mapped);
+		} else {
+			// Preserve original casing in the warning so authors see what they wrote.
+			dropped.push(raw.trim());
+		}
 	}
-	return normalized.size > 0 ? Array.from(normalized) : undefined;
+	if (dropped.length > 0) {
+		// eslint-disable-next-line no-console
+		console.warn(
+			`[subagent] dropped ${dropped.length} tool(s) with no pi equivalent: ${dropped.join(", ")}. ` +
+				"Agent will not have access to these capabilities.",
+		);
+	}
+	// No `tools:` declared at all → inherit defaults. Tools declared but all
+	// unmappable → empty allowlist (fail-safe), NOT default inheritance.
+	if (declaredCount === 0) return undefined;
+	return Array.from(normalized);
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
@@ -108,7 +143,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
-			tools: tools && tools.length > 0 ? tools : undefined,
+			// Preserve the fail-safe contract from normalizeToolNames: `[]` (all
+			// tools unmappable) must stay `[]` so the child runs with no tools,
+			// not be collapsed to undefined (which would inherit full defaults).
+			tools,
 			model: frontmatter.model,
 			systemPrompt: body,
 			source,

@@ -32,11 +32,14 @@ function getClaudeConfigHome(): string {
 /** Shape of `~/.claude/plugins/installed_plugins.json` (only the fields we use). */
 interface InstalledPluginsFile {
 	version?: number;
-	plugins?: Record<string, Array<{
-		scope?: string;
-		installPath?: string;
-		version?: string;
-	}>>;
+	plugins?: Record<
+		string,
+		Array<{
+			scope?: string;
+			installPath?: string;
+			version?: string;
+		}>
+	>;
 }
 
 export interface ClaudePluginPaths {

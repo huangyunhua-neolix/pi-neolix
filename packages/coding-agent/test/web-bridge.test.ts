@@ -227,6 +227,8 @@ describe("WebBridge — event → OSC translation", () => {
 		emit({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false });
 		// A 9999 frame must be emitted; `used` is undefined post-compaction so the
 		// frame carries limit + cost only.
-		expect(cap.writes.some((w) => w.startsWith("\x1b]9999;") && w.includes("limit=200000") && w.includes("cost=0.2"))).toBe(true);
+		expect(
+			cap.writes.some((w) => w.startsWith("\x1b]9999;") && w.includes("limit=200000") && w.includes("cost=0.2")),
+		).toBe(true);
 	});
 });

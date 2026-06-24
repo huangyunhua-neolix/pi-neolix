@@ -352,7 +352,15 @@ async function runSingleAgent(
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	if (modelToUse) args.push("--model", modelToUse);
 	if (defaultProvider) args.push("--provider", defaultProvider);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	// `agent.tools` contract (see normalizeToolNames in agents.ts):
+	//   - undefined → no `tools:` declared → inherit pi defaults (no flag)
+	//   - []        → tools declared but all unmappable → pass `--tools ""`
+	//                 so the child runs with NO tools (fail-safe), instead of
+	//                 silently inheriting full bash+write (privilege expansion
+	//                 of a restricted agent). `--tools ""` parses to [] which
+	//                 main.ts forwards as an empty allowlist.
+	//   - [...]     → normal allowlist
+	if (agent.tools) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
