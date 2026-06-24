@@ -1336,7 +1336,15 @@ export class InteractiveMode {
 		showDiagnosticsWhenQuiet?: boolean;
 	}): void {
 		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
-		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
+		// PI_QUIET=1 suppresses the informational startup diagnostics blocks
+		// ([Skill conflicts], [Prompt conflicts], [Extension issues], [Theme
+		// conflicts]). These are normally still shown even in quietStartup mode via
+		// showDiagnosticsWhenQuiet; PI_QUIET overrides that for a fully quiet start.
+		// Accepts 1 / true / yes (case-insensitive), matching other PI_* flags.
+		const quietFlag = process.env.PI_QUIET;
+		const quietDiagnostics =
+			quietFlag === "1" || quietFlag?.toLowerCase() === "true" || quietFlag?.toLowerCase() === "yes";
+		const showDiagnostics = !quietDiagnostics && (showListing || options?.showDiagnosticsWhenQuiet === true);
 		if (!showListing && !showDiagnostics) {
 			return;
 		}

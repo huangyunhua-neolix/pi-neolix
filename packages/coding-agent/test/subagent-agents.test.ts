@@ -182,6 +182,23 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		expect(calls[0]).not.toMatch(/\bread\b/);
 	});
 
+	it("suppresses the dropped-tools warning when PI_QUIET is set", () => {
+		const prev = process.env.PI_QUIET;
+		process.env.PI_QUIET = "1";
+		try {
+			const calls: string[] = [];
+			console.warn = (msg: string) => calls.push(msg);
+			const result = normalizeToolNames(["Read", "AskUserQuestion", "Skill"]);
+			// Warning suppressed, but the fail-safe mapping behavior is unchanged.
+			expect(calls).toHaveLength(0);
+			expect(result).toEqual(expect.arrayContaining(["read"]));
+			expect(result).not.toContain("askuserquestion");
+		} finally {
+			if (prev === undefined) delete process.env.PI_QUIET;
+			else process.env.PI_QUIET = prev;
+		}
+	});
+
 	it("does not warn when all declared tools map cleanly", () => {
 		const calls: string[] = [];
 		console.warn = (msg: string) => calls.push(msg);

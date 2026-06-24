@@ -1061,4 +1061,27 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Skill conflicts]");
 		expect(output).not.toContain("[Skills]");
 	});
+
+	test("PI_QUIET suppresses [Skill conflicts] even when showDiagnosticsWhenQuiet is true", () => {
+		const prev = process.env.PI_QUIET;
+		process.env.PI_QUIET = "1";
+		try {
+			const fakeThis = createShowLoadedResourcesThis({
+				quietStartup: true,
+				skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+				skillDiagnostics: [{ type: "warning", message: "duplicate skill name" }],
+			});
+
+			(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+				force: false,
+				showDiagnosticsWhenQuiet: true,
+			});
+
+			const output = renderAll(fakeThis.chatContainer);
+			expect(output).not.toContain("[Skill conflicts]");
+		} finally {
+			if (prev === undefined) delete process.env.PI_QUIET;
+			else process.env.PI_QUIET = prev;
+		}
+	});
 });
