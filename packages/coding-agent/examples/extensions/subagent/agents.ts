@@ -24,6 +24,84 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
+/**
+ * pi's built-in tool names (lowercase): bash, edit, find, grep, ls, read, write.
+ * Agent files shared with Claude Code / freecode use PascalCase names
+ * (Read, Grep, Glob, Bash, Edit, Write, AskUserQuestion, Skill, Task, ...).
+ * pi's `--tools` filter silently drops unknown names (see setActiveToolsByName
+ * in agent-session.ts), so without normalization every declared tool would be
+ * discarded and the subagent would fall back to the default tool set — ignoring
+ * the frontmatter's intent entirely.
+ *
+ * This maps the Claude Code aliases onto pi's names and drops the ones that have
+ * no pi equivalent (AskUserQuestion, Skill, Task, WebFetch, WebSearch, ...).
+ * The list is intentionally exhaustive on the read/write/search/exec axis so a
+ * shared agent file works on both CLIs.
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+	read: "read",
+	grep: "grep",
+	glob: "find", // Claude Code's file-pattern search ↔ pi's find
+	find: "find",
+	ls: "ls",
+	bash: "bash",
+	edit: "edit",
+	write: "write",
+};
+
+/**
+ * Normalize a list of tool names from agent frontmatter to pi's registered names.
+ * Case-insensitive; names with no pi equivalent (AskUserQuestion, Skill, Task,
+ * WebFetch, ...) are dropped.
+ *
+ * Return contract (intentional, security-relevant):
+ *   - `undefined` → the frontmatter declared no usable tools, OR no `tools:`
+ *     key at all. The caller passes no `--tools` flag and the subagent inherits
+ *     pi's default tool set. This is the "agent trusts the platform defaults"
+ *     case.
+ *   - `[]` (empty array) → the frontmatter DID declare tools, but every one of
+ *     them was unmappable (e.g. `tools: AskUserQuestion, Skill` — a restricted,
+ *     ask-only agent authored for Claude Code). Returning an empty allowlist
+ *     makes the spawned pi run with NO tools (fail-safe) instead of silently
+ *     inheriting full bash+write, which would invert the agent author's intent
+ *     ("restricted agent" → "unrestricted agent"). The caller passes
+ *     `--tools ""`, which `setActiveToolsByName` turns into an empty tool set.
+ *
+ * Without this distinction, a cross-CLI shared agent file that intentionally
+ * restricted tools to Claude-Code-only ones would gain unrestricted bash/write
+ * access under pi — a privilege expansion.
+ *
+ * Dropped names are warned to stderr so authors notice the gap.
+ */
+export function normalizeToolNames(names: string[]): string[] | undefined {
+	const normalized = new Set<string>();
+	const dropped: string[] = [];
+	let declaredCount = 0;
+	for (const raw of names) {
+		const key = raw.trim().toLowerCase();
+		if (!key) continue;
+		declaredCount++;
+		const mapped = TOOL_NAME_ALIASES[key];
+		if (mapped) {
+			normalized.add(mapped);
+		} else {
+			// Preserve original casing in the warning so authors see what they wrote.
+			dropped.push(raw.trim());
+		}
+	}
+	if (dropped.length > 0) {
+		// eslint-disable-next-line no-console
+		console.warn(
+			`[subagent] dropped ${dropped.length} tool(s) with no pi equivalent: ${dropped.join(", ")}. ` +
+				"Agent will not have access to these capabilities.",
+		);
+	}
+	// No `tools:` declared at all → inherit defaults. Tools declared but all
+	// unmappable → empty allowlist (fail-safe), NOT default inheritance.
+	if (declaredCount === 0) return undefined;
+	return Array.from(normalized);
+}
+
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
@@ -56,15 +134,19 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const tools = frontmatter.tools
+		const rawTools = frontmatter.tools
 			?.split(",")
 			.map((t: string) => t.trim())
 			.filter(Boolean);
+		const tools = rawTools && rawTools.length > 0 ? normalizeToolNames(rawTools) : undefined;
 
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
-			tools: tools && tools.length > 0 ? tools : undefined,
+			// Preserve the fail-safe contract from normalizeToolNames: `[]` (all
+			// tools unmappable) must stay `[]` so the child runs with no tools,
+			// not be collapsed to undefined (which would inherit full defaults).
+			tools,
 			model: frontmatter.model,
 			systemPrompt: body,
 			source,

@@ -639,6 +639,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					commands.push({
 						name: command.invocationName,
 						description: command.description,
+						...(command.argumentHint && { argumentHint: command.argumentHint }),
 						source: "extension",
 						sourceInfo: command.sourceInfo,
 					});
@@ -648,6 +649,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					commands.push({
 						name: template.name,
 						description: template.description,
+						...(template.argumentHint && { argumentHint: template.argumentHint }),
 						source: "prompt",
 						sourceInfo: template.sourceInfo,
 					});

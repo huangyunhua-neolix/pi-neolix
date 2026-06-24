@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { discoverAgents } from "../examples/extensions/subagent/agents.ts";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { discoverAgents, normalizeToolNames } from "../examples/extensions/subagent/agents.ts";
 
 /**
  * discoverAgents reads from two user roots:
@@ -122,6 +122,155 @@ describe("discoverAgents — ~/.claude/agents user root", () => {
 		try {
 			const { agents } = discoverAgents(join(dir, "cwd"), "user");
 			expect(agents.map((a) => a.name)).toEqual(["valid"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
+	// Silence the dropped-tools warning so test output stays clean; assert on
+	// it explicitly in the dedicated test below.
+	const realWarn = console.warn;
+	beforeEach(() => {
+		console.warn = () => {};
+	});
+	afterEach(() => {
+		console.warn = realWarn;
+	});
+
+	it("maps PascalCase Claude Code names to pi's lowercase registry", () => {
+		expect(normalizeToolNames(["Read", "Grep", "Glob", "Bash", "Edit", "Write"])).toEqual(
+			expect.arrayContaining(["read", "grep", "find", "bash", "edit", "write"]),
+		);
+	});
+
+	it("is case-insensitive", () => {
+		expect(normalizeToolNames(["READ", "Grep"])).toEqual(expect.arrayContaining(["read", "grep"]));
+	});
+
+	it("drops names that have no pi equivalent (AskUserQuestion, Skill, Task, WebFetch)", () => {
+		const result = normalizeToolNames(["Read", "AskUserQuestion", "Skill", "Task", "WebFetch", "Grep"]);
+		expect(result).toEqual(expect.arrayContaining(["read", "grep"]));
+		expect(result).not.toContain("askuserquestion");
+		expect(result).not.toContain("skill");
+	});
+
+	it("returns [] (empty allowlist, fail-safe) when declared tools are all unmappable", () => {
+		// A restricted agent authored for Claude Code (`tools: AskUserQuestion, Skill`)
+		// must NOT silently inherit pi's full default tool set (bash+write) — that
+		// would be a privilege expansion. Empty allowlist = child runs with no tools.
+		expect(normalizeToolNames(["AskUserQuestion", "Skill", "TodoWrite"])).toEqual([]);
+	});
+
+	it("returns undefined only when no tools were declared at all", () => {
+		// No `tools:` key in frontmatter, or empty value → inherit pi defaults.
+		expect(normalizeToolNames([])).toBeUndefined();
+		expect(normalizeToolNames(["", "  "])).toBeUndefined();
+	});
+
+	it("warns to stderr listing dropped tool names (original casing preserved)", () => {
+		const calls: string[] = [];
+		console.warn = (msg: string) => calls.push(msg);
+		normalizeToolNames(["Read", "AskUserQuestion", "Skill"]);
+		expect(calls).toHaveLength(1);
+		// Both dropped names must appear (order-independent), and the mapped
+		// name "read" must NOT — if casing broke, "read" would match the
+		// dropped-name substring check.
+		expect(calls[0]).toMatch(/AskUserQuestion/);
+		expect(calls[0]).toMatch(/Skill/);
+		expect(calls[0]).not.toMatch(/\bread\b/);
+	});
+
+	it("does not warn when all declared tools map cleanly", () => {
+		const calls: string[] = [];
+		console.warn = (msg: string) => calls.push(msg);
+		normalizeToolNames(["Read", "Grep"]);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("dedupes when Glob and Find both map to find", () => {
+		const result = normalizeToolNames(["Glob", "find"]);
+		expect(result).toEqual(["find"]);
+	});
+
+	it("end-to-end: an agent file with Claude Code tool names is normalized on discovery", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-tools-"));
+		const claudeAgents = join(dir, ".claude", "agents");
+		mkdirSync(claudeAgents, { recursive: true });
+		writeFileSync(
+			join(claudeAgents, "reviewer.md"),
+			"---\nname: reviewer\ndescription: review\ntools: Read, Grep, Glob, AskUserQuestion, Skill\n---\nbody\n",
+		);
+		delete process.env.PI_CODING_AGENT_DIR;
+		withHome(dir);
+		try {
+			const { agents } = discoverAgents(join(dir, "cwd"), "user");
+			expect(agents).toHaveLength(1);
+			expect(agents[0].tools).toEqual(expect.arrayContaining(["read", "grep", "find"]));
+			expect(agents[0].tools).not.toContain("AskUserQuestion");
+			expect(agents[0].tools).not.toContain("Skill");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("end-to-end: an agent declaring only unmappable tools gets an empty allowlist (fail-safe)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-failsafe-"));
+		const claudeAgents = join(dir, ".claude", "agents");
+		mkdirSync(claudeAgents, { recursive: true });
+		writeFileSync(
+			join(claudeAgents, "ask-only.md"),
+			"---\nname: ask-only\ndescription: ask\ntools: AskUserQuestion, Skill\n---\nbody\n",
+		);
+		delete process.env.PI_CODING_AGENT_DIR;
+		withHome(dir);
+		try {
+			const { agents } = discoverAgents(join(dir, "cwd"), "user");
+			expect(agents).toHaveLength(1);
+			// Not undefined (which would inherit defaults) — explicit empty allowlist.
+			expect(agents[0].tools).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("end-to-end: an agent with no tools frontmatter inherits defaults (undefined)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-notools-"));
+		const claudeAgents = join(dir, ".claude", "agents");
+		mkdirSync(claudeAgents, { recursive: true });
+		writeFileSync(join(claudeAgents, "bare.md"), "---\nname: bare\ndescription: bare\n---\nbody\n");
+		delete process.env.PI_CODING_AGENT_DIR;
+		withHome(dir);
+		try {
+			const { agents } = discoverAgents(join(dir, "cwd"), "user");
+			expect(agents).toHaveLength(1);
+			expect(agents[0].tools).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("end-to-end: whitespace-only tools value is treated as undeclared (inherits defaults)", () => {
+		// `tools: "   "` → filter(Boolean) → [] → length 0 guard short-circuits
+		// to undefined BEFORE normalizeToolNames runs. This pins the current
+		// contract: malformed/empty tools value = "trust platform defaults",
+		// NOT "run with no tools" (which would be the fail-safe [] path).
+		// If you change loadAgentsFromDir to route whitespace through
+		// normalizeToolNames, update this test to expect [].
+		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-ws-"));
+		const claudeAgents = join(dir, ".claude", "agents");
+		mkdirSync(claudeAgents, { recursive: true });
+		writeFileSync(
+			join(claudeAgents, "ws.md"),
+			"---\nname: ws\ndescription: ws\ntools: \"   \"\n---\nbody\n",
+		);
+		delete process.env.PI_CODING_AGENT_DIR;
+		withHome(dir);
+		try {
+			const { agents } = discoverAgents(join(dir, "cwd"), "user");
+			expect(agents).toHaveLength(1);
+			expect(agents[0].tools).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

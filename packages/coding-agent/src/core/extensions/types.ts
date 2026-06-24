@@ -1106,6 +1106,11 @@ export interface RegisteredCommand {
 	name: string;
 	sourceInfo: SourceInfo;
 	description?: string;
+	/**
+	 * Hint shown after the command name in the palette (e.g. "<requirement>").
+	 * Read by interactive-mode.ts when rendering the command list.
+	 */
+	argumentHint?: string;
 	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 }
