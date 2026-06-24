@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import type { Message } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "../src/core/tools/agent-discovery.ts";
@@ -6,11 +7,13 @@ import {
 	AGENT_TOOL_NAME,
 	createAgentTool,
 	createAgentToolDefinition,
+	getPiInvocation,
 	handleRelayEvent,
 	makeGeneralPurposeAgent,
 	processLine,
 	resolveSpawnArgs,
 	resolveToolsArg,
+	runOneAgentSpawn,
 } from "../src/core/tools/agent-tool.ts";
 
 const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -378,5 +381,234 @@ describe("createAgentTool", () => {
 	it("creates a tool with name Agent", () => {
 		const tool = createAgentTool("/tmp");
 		expect(tool.name).toBe("Agent");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Spawn loop integration (R1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mock ChildProcess for spawn-loop tests. Emits 'data' on stdout/stderr,
+ * 'close' with an exit code, and exposes a writable stdin.
+ */
+function makeMockChildProcess(): any {
+	const stdout = new EventEmitter();
+	const stderr = new EventEmitter();
+	const stdin = { write: vi.fn().mockReturnValue(true), end: vi.fn() };
+	const proc: any = {
+		stdout,
+		stderr,
+		stdin,
+		kill: vi.fn(),
+		killed: false,
+		on: vi.fn((event: string, cb: (...args: any[]) => void) => {
+			proc._handlers = proc._handlers || {};
+			const list = proc._handlers[event] || [];
+			list.push(cb);
+			proc._handlers[event] = list;
+			return proc;
+		}),
+		_emitClose: (code: number) => {
+			const handlers = proc._handlers?.close ?? [];
+			for (const cb of handlers) cb(code);
+		},
+	};
+	return proc;
+}
+
+describe("getPiInvocation", () => {
+	it("returns command and args", () => {
+		const inv = getPiInvocation(["--mode", "json"]);
+		expect(inv.command).toBeDefined();
+		expect(Array.isArray(inv.args)).toBe(true);
+	});
+});
+
+describe("runOneAgentSpawn (spawn loop)", () => {
+	const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "Agent"];
+
+	function makeSpawnAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
+		return {
+			name: "test-agent",
+			description: "test",
+			systemPrompt: "you are a test agent",
+			source: "user",
+			filePath: "/tmp/test.md",
+			tools: undefined,
+			...overrides,
+		};
+	}
+
+	it("spawns child pi with resolved argv including --tools wildcard and pipe/pipe/pipe stdio", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+
+		const promise = runOneAgentSpawn({
+			agent: makeSpawnAgent(),
+			task: "do something",
+			cwd: "/tmp",
+			allRegisteredToolNames: ALL_TOOLS,
+			spawnFn: spawnFn as any,
+		});
+
+		// Wait for spawn to be called
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+
+		const spawnCall = spawnFn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+		const [command, args, options] = spawnCall;
+		expect(command).toBeDefined();
+		// --mode json --no-session
+		expect(args).toContain("--mode");
+		expect(args).toContain("--no-session");
+		// --tools wildcard = all tools joined
+		expect(args).toContain("--tools");
+		const toolsIdx = args.indexOf("--tools");
+		expect(args[toolsIdx + 1]).toBe(ALL_TOOLS.join(","));
+		// stdio is pipe/pipe/pipe
+		expect(options.stdio).toEqual(["pipe", "pipe", "pipe"]);
+		expect(options.cwd).toBe("/tmp");
+		expect(options.shell).toBe(false);
+		// task passed as positional
+		expect(args[args.length - 1]).toContain("Task: do something");
+
+		// Emit a message_end line
+		const msg: Message = {
+			role: "assistant",
+			content: [{ type: "text", text: "hello from child" }],
+		} as any;
+		proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "message_end", message: msg }) + "\n"));
+		proc._emitClose(0);
+
+		const result = await promise;
+		expect(result.exitCode).toBe(0);
+		expect(result.messages.length).toBe(1);
+		expect(result.agent).toBe("test-agent");
+	});
+
+	it("returns exit code on child failure and includes stderr", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+
+		const promise = runOneAgentSpawn({
+			agent: makeSpawnAgent(),
+			task: "fail task",
+			cwd: "/tmp",
+			allRegisteredToolNames: ALL_TOOLS,
+			spawnFn: spawnFn as any,
+		});
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		proc.stderr.emit("data", Buffer.from("child error output"));
+		proc._emitClose(1);
+
+		const result = await promise;
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain("child error output");
+	});
+
+	it("writes system prompt to temp file and passes via --append-system-prompt", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+
+		const promise = runOneAgentSpawn({
+			agent: makeSpawnAgent({ systemPrompt: "custom system prompt" }),
+			task: "task",
+			cwd: "/tmp",
+			allRegisteredToolNames: ALL_TOOLS,
+			spawnFn: spawnFn as any,
+		});
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		const args = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+		expect(args).toContain("--append-system-prompt");
+		const idx = args.indexOf("--append-system-prompt");
+		expect(args[idx + 1]).toMatch(/prompt-test-agent\.md$/);
+
+		proc._emitClose(0);
+		await promise;
+	});
+
+	it("does not pass --append-system-prompt when systemPrompt is empty", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+
+		const promise = runOneAgentSpawn({
+			agent: makeSpawnAgent({ systemPrompt: "   " }),
+			task: "task",
+			cwd: "/tmp",
+			allRegisteredToolNames: ALL_TOOLS,
+			spawnFn: spawnFn as any,
+		});
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		const args = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+		expect(args).not.toContain("--append-system-prompt");
+
+		proc._emitClose(0);
+		await promise;
+	});
+});
+
+describe("createAgentToolDefinition execute (single mode via mock spawn)", () => {
+	const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "Agent"];
+
+	function makeCtx(cwd: string): any {
+		return { cwd, getActiveTools: () => ALL_TOOLS };
+	}
+
+	it("returns error result for invalid parameters", async () => {
+		const def = createAgentToolDefinition("/tmp");
+		const result: any = await def.execute("call-1", {}, undefined, undefined, makeCtx("/tmp"));
+		expect(result.content[0].text).toContain("Invalid parameters");
+	});
+
+	it("spawns child for single agent mode and returns assistant output", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+
+		const promise = def.execute(
+			"call-2",
+			{ subagent_type: "general-purpose", prompt: "say hello" },
+			undefined,
+			undefined,
+			makeCtx("/tmp"),
+		);
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		const msg: Message = {
+			role: "assistant",
+			content: [{ type: "text", text: "hello from subagent" }],
+		} as any;
+		proc.stdout.emit("data", Buffer.from(JSON.stringify({ type: "message_end", message: msg }) + "\n"));
+		proc._emitClose(0);
+
+		const result: any = await promise;
+		expect(result.content[0].text).toContain("hello from subagent");
+		expect(result.details.mode).toBe("single");
+	});
+
+	it("returns error when child exits non-zero", async () => {
+		const proc = makeMockChildProcess();
+		const spawnFn = vi.fn(() => proc);
+		const def = createAgentToolDefinition("/tmp", { spawnFn: spawnFn as any });
+
+		const promise = def.execute(
+			"call-3",
+			{ subagent_type: "general-purpose", prompt: "fail" },
+			undefined,
+			undefined,
+			makeCtx("/tmp"),
+		);
+
+		await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(1));
+		proc.stderr.emit("data", Buffer.from("spawn failure"));
+		proc._emitClose(1);
+
+		const result: any = await promise;
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("Agent failed");
+		expect(result.content[0].text).toContain("spawn failure");
 	});
 });

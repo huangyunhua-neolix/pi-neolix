@@ -22,16 +22,22 @@
  * Registration into the tool index is handled by t-9, not here.
  */
 
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import { getAgentDir } from "../../config.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { AgentConfig } from "./agent-discovery.ts";
-import { subtractDisallowed } from "./agent-discovery.ts";
+import { type AgentScope, discoverAgents, subtractDisallowed } from "./agent-discovery.ts";
 import { deliverAskUserQuestionResponse } from "./ask-user-question.ts";
+import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { decodeLine, encodeEvent, type PiEvent } from "./relay-protocol.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -261,6 +267,294 @@ export function processLine(line: string, ctx: ProcessLineContext): boolean {
 	return false;
 }
 
+/**
+ * Spawn function type — injectable for testing.
+ *
+ * Default implementation is `node:child_process.spawn`. Tests pass a mock
+ * to verify argv / stdio / processLine wiring without spawning a real `pi`
+ * subprocess.
+ */
+export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+
+/**
+ * Resolve the `pi` invocation (command + argv prefix) for spawning a child
+ * agent process. Mirrors the old extension's getPiInvocation logic: when pi
+ * is running under a generic runtime (node/bun), invoke `pi` directly so the
+ * child resolves via PATH; otherwise re-run the current script with the
+ * current executable.
+ */
+export function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
+
+	const execName = path.basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) {
+		return { command: process.execPath, args };
+	}
+
+	return { command: "pi", args };
+}
+
+/**
+ * Write the agent's system prompt to a temp file and return the path. The
+ * child pi receives it via `--append-system-prompt`.
+ */
+async function writePromptToTempFile(
+	agentName: string,
+	prompt: string,
+): Promise<{
+	dir: string;
+	filePath: string;
+}> {
+	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-agent-"));
+	const safeName = agentName.replace(/[^\w.-]+/g, "_");
+	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+	await withFileMutationQueue(filePath, async () => {
+		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+	});
+	return { dir: tmpDir, filePath };
+}
+
+export interface RunOneAgentSpawnOptions {
+	agent: AgentConfig;
+	task: string;
+	cwd: string;
+	allRegisteredToolNames: string[];
+	modelToUse?: string;
+	defaultProvider?: string;
+	signal?: AbortSignal;
+	onMessageEnd?: (msg: Message) => void;
+	onAskUserQuestion?: (evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>;
+	step?: number;
+	spawnFn?: SpawnFn;
+}
+
+export interface SingleSpawnResult {
+	agent: string;
+	agentSource: AgentConfig["source"];
+	task: string;
+	exitCode: number;
+	messages: Message[];
+	stderr: string;
+	step?: number;
+}
+
+/**
+ * Spawn a single child `pi` process for one agent invocation, drain its
+ * stdout through `processLine`, and return the collected messages + exit
+ * code. Used by single, parallel, and chain modes.
+ */
+export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<SingleSpawnResult> {
+	const {
+		agent,
+		task,
+		cwd,
+		allRegisteredToolNames,
+		modelToUse,
+		defaultProvider,
+		signal,
+		onMessageEnd,
+		onAskUserQuestion,
+		step,
+		spawnFn: injectSpawnFn,
+	} = opts;
+
+	const spawnFn: SpawnFn = injectSpawnFn ?? (spawn as SpawnFn);
+
+	let tmpPromptDir: string | null = null;
+	let tmpPromptPath: string | undefined;
+
+	const result: SingleSpawnResult = {
+		agent: agent.name,
+		agentSource: agent.source,
+		task,
+		exitCode: 0,
+		messages: [],
+		stderr: "",
+		step,
+	};
+
+	try {
+		if (agent.systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+			tmpPromptDir = tmp.dir;
+			tmpPromptPath = tmp.filePath;
+		}
+
+		const argv = resolveSpawnArgs({
+			agent,
+			modelToUse,
+			defaultProvider,
+			allRegisteredToolNames,
+			tmpPromptPath,
+		});
+		argv.push(`Task: ${task}`);
+
+		const invocation = getPiInvocation(argv);
+		let buffer = "";
+		let wasAborted = false;
+
+		const exitCode = await new Promise<number>((resolve) => {
+			const proc = spawnFn(invocation.command, invocation.args, {
+				cwd,
+				shell: false,
+				stdio: [...AGENT_SPAWN_STDIO] as SpawnOptions["stdio"],
+			});
+
+			const stdin = proc.stdin;
+			const processCtx: ProcessLineContext = {
+				stdin,
+				onMessageEnd: (msg) => {
+					result.messages.push(msg);
+					onMessageEnd?.(msg);
+				},
+				onToolResultEnd: (msg) => {
+					result.messages.push(msg);
+				},
+				onAskUserQuestion,
+			};
+
+			proc.stdout?.on("data", (data: Buffer) => {
+				buffer += data.toString();
+				const lines = buffer.split("\n");
+				buffer = lines.pop() ?? "";
+				for (const line of lines) {
+					processLine(line, processCtx);
+				}
+			});
+
+			proc.stderr?.on("data", (data: Buffer) => {
+				result.stderr += data.toString();
+			});
+
+			proc.on("close", (code) => {
+				if (buffer.trim()) processLine(buffer, processCtx);
+				resolve(code ?? 0);
+			});
+
+			proc.on("error", () => {
+				resolve(1);
+			});
+
+			if (signal) {
+				const killProc = () => {
+					wasAborted = true;
+					proc.kill("SIGTERM");
+					setTimeout(() => {
+						if (!proc.killed) proc.kill("SIGKILL");
+					}, 5000);
+				};
+				if (signal.aborted) killProc();
+				else signal.addEventListener("abort", killProc, { once: true });
+			}
+		});
+
+		result.exitCode = exitCode;
+		if (wasAborted) throw new Error("Agent was aborted");
+		return result;
+	} finally {
+		if (tmpPromptPath) {
+			try {
+				fs.unlinkSync(tmpPromptPath);
+			} catch {
+				// ignore
+			}
+		}
+		if (tmpPromptDir) {
+			try {
+				fs.rmdirSync(tmpPromptDir);
+			} catch {
+				// ignore
+			}
+		}
+	}
+}
+
+function getFinalAssistantOutput(messages: Message[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role === "assistant") {
+			for (const part of msg.content) {
+				if (part.type === "text") return part.text;
+			}
+		}
+	}
+	return "";
+}
+
+function isFailedSpawnResult(result: SingleSpawnResult): boolean {
+	return result.exitCode !== 0;
+}
+
+function getResultOutput(result: SingleSpawnResult): string {
+	if (isFailedSpawnResult(result)) {
+		return result.stderr || getFinalAssistantOutput(result.messages) || "(no output)";
+	}
+	return getFinalAssistantOutput(result.messages) || "(no output)";
+}
+
+const MAX_PARALLEL_TASKS = 8;
+const MAX_CONCURRENCY = 4;
+
+async function mapWithConcurrencyLimit<TIn, TOut>(
+	items: TIn[],
+	concurrency: number,
+	fn: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]> {
+	if (items.length === 0) return [];
+	const limit = Math.max(1, Math.min(concurrency, items.length));
+	const results: TOut[] = new Array(items.length);
+	let nextIndex = 0;
+	const workers = new Array(limit).fill(null).map(async () => {
+		while (true) {
+			const current = nextIndex++;
+			if (current >= items.length) return;
+			results[current] = await fn(items[current], current);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+/**
+ * Read defaultProvider from settings.json (~/.pi/settings.json). The child
+ * pi's model resolver is pinned to this provider via `--provider`.
+ */
+function readDefaultProvider(): string | undefined {
+	try {
+		const settingsPath = path.join(getAgentDir(), "settings.json");
+		const raw = fs.readFileSync(settingsPath, "utf-8");
+		const parsed = JSON.parse(raw);
+		if (parsed.defaultProvider && typeof parsed.defaultProvider === "string") {
+			return parsed.defaultProvider;
+		}
+	} catch {
+		// ignore — no settings.json or invalid JSON
+	}
+	return undefined;
+}
+
+const V2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+
+const BASE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const V2_TOOL_NAMES = ["Agent", "Skill", "AskUserQuestion", "WebFetch", "WebSearch"];
+
+/**
+ * Return the list of all registered tool names for the current runtime
+ * (matches the set produced by createAllToolDefinitions in index.ts).
+ *
+ * Used by the Agent tool's execute() to resolve `--tools` for the spawned
+ * child. We compute this locally rather than importing from index.ts to
+ * avoid a circular import (index.ts imports from agent-tool.ts).
+ */
+function getAllRegisteredToolNames(): string[] {
+	return V2 ? [...BASE_TOOL_NAMES, ...V2_TOOL_NAMES] : BASE_TOOL_NAMES;
+}
+
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
@@ -309,7 +603,19 @@ export type AgentToolInput = Static<typeof agentSchema>;
 // Tool definition
 // ---------------------------------------------------------------------------
 
-export function createAgentToolDefinition(cwd: string): ToolDefinition<typeof agentSchema, unknown> {
+export interface AgentToolDefinitionOptions {
+	/**
+	 * Injectable spawn function for testing. Defaults to
+	 * `node:child_process.spawn`.
+	 */
+	spawnFn?: SpawnFn;
+}
+
+export function createAgentToolDefinition(
+	_cwd: string,
+	options?: AgentToolDefinitionOptions,
+): ToolDefinition<typeof agentSchema, unknown> {
+	const spawnFn = options?.spawnFn;
 	return {
 		name: AGENT_TOOL_NAME,
 		label: "Agent",
@@ -321,13 +627,12 @@ export function createAgentToolDefinition(cwd: string): ToolDefinition<typeof ag
 		promptSnippet: "Delegate tasks to specialized subagents",
 		parameters: agentSchema,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			// The full spawn loop (runSingleAgent) is not implemented here — it
-			// lives in the execute path that t-9 wires up with model registry,
-			// settings.json provider detection, and TUI rendering. This stub
-			// returns a placeholder so the tool definition is structurally
-			// complete and the pure functions (resolveToolsArg, resolveSpawnArgs,
-			// processLine) are independently testable.
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const agentScope: AgentScope = params.agentScope ?? "user";
+			const allRegisteredToolNames = getAllRegisteredToolNames();
+			const defaultProvider = readDefaultProvider();
+			const modelToUse: string | undefined = undefined;
+
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.subagent_type || params.agent) && Boolean(params.prompt || params.task);
@@ -344,14 +649,117 @@ export function createAgentToolDefinition(cwd: string): ToolDefinition<typeof ag
 				};
 			}
 
+			const discovery = discoverAgents(ctx.cwd, agentScope);
+			const agents = discovery.agents;
+
+			const resolveAgent = (name?: string): AgentConfig => {
+				if (!name) return makeGeneralPurposeAgent(allRegisteredToolNames);
+				const found = agents.find((a) => a.name === name);
+				if (found) return found;
+				return makeGeneralPurposeAgent(allRegisteredToolNames);
+			};
+
+			const spawnOpts = (
+				agentCfg: AgentConfig,
+				task: string,
+				cwd: string,
+				step?: number,
+			): RunOneAgentSpawnOptions => ({
+				agent: agentCfg,
+				task,
+				cwd,
+				allRegisteredToolNames,
+				modelToUse: modelToUse ?? agentCfg.model,
+				defaultProvider,
+				signal,
+				step,
+				spawnFn,
+			});
+
+			// Chain mode: sequential, {previous} placeholder substituted.
+			if (hasChain && params.chain) {
+				const results: SingleSpawnResult[] = [];
+				let previousOutput = "";
+				for (let i = 0; i < params.chain.length; i++) {
+					const step = params.chain[i];
+					const taskText = (step.prompt ?? step.task ?? "").replace(/\{previous\}/g, previousOutput);
+					const agentCfg = resolveAgent(step.subagent_type ?? step.agent);
+					const result = await runOneAgentSpawn(spawnOpts(agentCfg, taskText, step.cwd ?? ctx.cwd, i + 1));
+					results.push(result);
+					if (isFailedSpawnResult(result)) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Chain stopped at step ${i + 1} (${agentCfg.name}): ${getResultOutput(result)}`,
+								},
+							],
+							details: { mode: "chain", results },
+							isError: true,
+						};
+					}
+					previousOutput = getFinalAssistantOutput(result.messages);
+				}
+				return {
+					content: [
+						{
+							type: "text",
+							text: getFinalAssistantOutput(results[results.length - 1].messages) || "(no output)",
+						},
+					],
+					details: { mode: "chain", results },
+				};
+			}
+
+			// Parallel mode: bounded concurrency.
+			if (hasTasks && params.tasks) {
+				if (params.tasks.length > MAX_PARALLEL_TASKS) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+							},
+						],
+						details: { mode: "parallel", results: [] },
+					};
+				}
+				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+					const agentCfg = resolveAgent(t.subagent_type ?? t.agent);
+					const taskText = t.prompt ?? t.task ?? "";
+					return runOneAgentSpawn(spawnOpts(agentCfg, taskText, t.cwd ?? ctx.cwd, index + 1));
+				});
+				const successCount = results.filter((r) => !isFailedSpawnResult(r)).length;
+				const summaries = results.map((r) => {
+					const output = getResultOutput(r);
+					const status = isFailedSpawnResult(r) ? "failed" : "completed";
+					return `### [${r.agent}] ${status}\n\n${output}`;
+				});
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`,
+						},
+					],
+					details: { mode: "parallel", results },
+				};
+			}
+
+			// Single mode.
+			const agentCfg = resolveAgent(params.subagent_type ?? params.agent);
+			const taskText = params.prompt ?? params.task ?? "";
+			const result = await runOneAgentSpawn(spawnOpts(agentCfg, taskText, params.cwd ?? ctx.cwd));
+			if (isFailedSpawnResult(result)) {
+				return {
+					content: [{ type: "text", text: `Agent failed: ${getResultOutput(result)}` }],
+					details: { mode: "single", results: [result] },
+					isError: true,
+				};
+			}
 			return {
-				content: [
-					{
-						type: "text",
-						text: `Agent tool dispatched (cwd: ${cwd}). Full spawn loop is implemented in the runtime integration layer.`,
-					},
-				],
-				details: undefined,
+				content: [{ type: "text", text: getFinalAssistantOutput(result.messages) || "(no output)" }],
+				details: { mode: "single", results: [result] },
 			};
 		},
 
@@ -403,6 +811,6 @@ export function createAgentToolDefinition(cwd: string): ToolDefinition<typeof ag
 	};
 }
 
-export function createAgentTool(cwd: string): AgentTool<any> {
-	return wrapToolDefinition(createAgentToolDefinition(cwd));
+export function createAgentTool(cwd: string, options?: AgentToolDefinitionOptions): AgentTool<any> {
+	return wrapToolDefinition(createAgentToolDefinition(cwd, options));
 }

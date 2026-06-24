@@ -167,4 +167,22 @@ describe("createSkillTool", () => {
 		expect(def.parameters).toBeDefined();
 		expect(def.description.toLowerCase()).toContain("skill");
 	});
+
+	it("executes with spawnSkill when provided (Y1 wiring)", async () => {
+		const skillDir = join(testDir, "y1-spawn-skill");
+		const skill = writeSkill(skillDir, "y1-spawn-skill", "x".repeat(3000));
+		const spawnMock = vi.fn().mockResolvedValue({
+			content: [{ type: "text", text: "y1-spawned" }],
+		});
+		const tool = createSkillTool(testDir, [skill], { spawnSkill: spawnMock });
+		const result = await tool.execute("call-y1", { skill_name: "y1-spawn-skill" });
+		expect(getText(result)).toBe("y1-spawned");
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("passes loaded skills list so unknown skill throws with available list (Y1 wiring)", async () => {
+		const a = writeSkill(join(testDir, "y1-a"), "y1-a", "body\n");
+		const tool = createSkillTool(testDir, [a]);
+		await expect(tool.execute("call-y1-2", { skill_name: "nope" })).rejects.toThrow(/y1-a/);
+	});
 });

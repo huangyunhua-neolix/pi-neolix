@@ -1,5 +1,6 @@
 export {
 	AGENT_TOOL_NAME,
+	type AgentToolDefinitionOptions,
 	createAgentTool,
 	createAgentToolDefinition,
 } from "./agent-tool.ts";
@@ -94,6 +95,7 @@ export {
 	type WriteToolOptions,
 } from "./write.ts";
 
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { Skill } from "../skills.ts";
@@ -150,6 +152,7 @@ export interface ToolsOptions {
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
 	skill?: SkillToolOptions & { skills?: Skill[] };
+	agent?: { spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess };
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
@@ -169,7 +172,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "Agent":
-			return createAgentToolDefinition(cwd);
+			return createAgentToolDefinition(cwd, options?.agent);
 		case "Skill":
 			return createSkillToolDefinition(cwd, options?.skill?.skills ?? [], options?.skill);
 		case "AskUserQuestion":
@@ -200,7 +203,7 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 		case "ls":
 			return createLsTool(cwd, options?.ls);
 		case "Agent":
-			return createAgentTool(cwd);
+			return createAgentTool(cwd, options?.agent);
 		case "Skill":
 			return createSkillTool(cwd, options?.skill?.skills ?? [], options?.skill);
 		case "AskUserQuestion":
@@ -243,7 +246,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		ls: createLsToolDefinition(cwd, options?.ls),
 	};
 	if (V2) {
-		base.Agent = createAgentToolDefinition(cwd);
+		base.Agent = createAgentToolDefinition(cwd, options?.agent);
 		base.Skill = createSkillToolDefinition(cwd, options?.skill?.skills ?? [], options?.skill);
 		base.AskUserQuestion = createAskUserQuestionToolDefinition(cwd);
 		base.WebFetch = createWebFetchToolDefinition(cwd);
@@ -281,7 +284,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		ls: createLsTool(cwd, options?.ls),
 	};
 	if (V2) {
-		base.Agent = createAgentTool(cwd);
+		base.Agent = createAgentTool(cwd, options?.agent);
 		base.Skill = createSkillTool(cwd, options?.skill?.skills ?? [], options?.skill);
 		base.AskUserQuestion = createAskUserQuestionTool(cwd);
 		base.WebFetch = createWebFetchTool(cwd);
