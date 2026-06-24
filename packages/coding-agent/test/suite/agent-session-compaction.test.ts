@@ -511,36 +511,33 @@ describe("AgentSession compaction characterization", () => {
 		["error", "prompt is too long: 300000 tokens > 200000 maximum", 0],
 		["stop", undefined, 300_000], // z.ai-style silent overflow (input > contextWindow)
 		["length", undefined, 300_000], // Xiaomi MiMo-style truncation overflow
-	] as const)(
-		"overflow recovery guard survives a stopReason %s overflow message_end",
-		(stopReason, errorMessage, totalTokens) => {
-			it("does not reset _overflowRecoveryAttempted for an overflow assistant", async () => {
-				const harness = await createHarness();
-				harnesses.push(harness);
-				const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+	] as const)("overflow recovery guard survives a stopReason %s overflow message_end", (stopReason, errorMessage, totalTokens) => {
+		it("does not reset _overflowRecoveryAttempted for an overflow assistant", async () => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+			const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 
-				// Simulate the guard being set by a prior overflow recovery, then a
-				// fresh overflow assistant arrives and its message_end is processed.
-				sessionInternals._overflowRecoveryAttempted = true;
+			// Simulate the guard being set by a prior overflow recovery, then a
+			// fresh overflow assistant arrives and its message_end is processed.
+			sessionInternals._overflowRecoveryAttempted = true;
 
-				const overflowAssistant = createAssistant(harness, {
-					stopReason,
-					errorMessage,
-					totalTokens,
-					timestamp: Date.now(),
-				});
-
-				await sessionInternals._handleAgentEvent({
-					type: "message_end",
-					message: overflowAssistant,
-				});
-
-				// The guard must survive — a non-error overflow is still an overflow,
-				// so it must not re-enable a second compact-and-retry.
-				expect(sessionInternals._overflowRecoveryAttempted).toBe(true);
+			const overflowAssistant = createAssistant(harness, {
+				stopReason,
+				errorMessage,
+				totalTokens,
+				timestamp: Date.now(),
 			});
-		},
-	);
+
+			await sessionInternals._handleAgentEvent({
+				type: "message_end",
+				message: overflowAssistant,
+			});
+
+			// The guard must survive — a non-error overflow is still an overflow,
+			// so it must not re-enable a second compact-and-retry.
+			expect(sessionInternals._overflowRecoveryAttempted).toBe(true);
+		});
+	});
 
 	it("resets _overflowRecoveryAttempted for a successful (non-overflow) assistant", async () => {
 		// Complement: a genuinely successful assistant (stop, small input) MUST

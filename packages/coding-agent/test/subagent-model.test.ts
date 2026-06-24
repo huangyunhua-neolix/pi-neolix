@@ -1,5 +1,5 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { PREFERRED_MODEL_ID, resolvePreferredModel } from "../examples/extensions/subagent/index.ts";
 
 /**
@@ -74,7 +74,10 @@ describe("resolvePreferredModel", () => {
 	it("does not match glm-5.2 by name alone across providers", () => {
 		// Two providers each have a model named glm-5.2; only the one under the
 		// default provider counts.
-		const reg = registryWith([fakeModel("opencode-go", PREFERRED_MODEL_ID), fakeModel("neolix", PREFERRED_MODEL_ID)]);
+		const reg = registryWith([
+			fakeModel("opencode-go", PREFERRED_MODEL_ID),
+			fakeModel("neolix", PREFERRED_MODEL_ID),
+		]);
 		expect(resolvePreferredModel(reg, "neolix")).toBe("glm-5.2");
 		expect(resolvePreferredModel(reg, "opencode-go")).toBe("glm-5.2");
 		expect(resolvePreferredModel(reg, "zai")).toBeUndefined();

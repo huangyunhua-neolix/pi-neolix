@@ -409,6 +409,15 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 			const existing = skillMap.get(skill.name);
 			if (existing) {
+				// Duplicate skill name — silently keep the first-loaded one and skip
+				// the rest. Previously this pushed a "collision" diagnostic that was
+				// surfaced to the user, but with Claude Code plugin skills mirrored
+				// at multiple paths (cache vs user-level), legitimate installs would
+				// flood the diagnostics with false collisions. Dedup silently: the
+				// first definition wins, duplicates are ignored. (Real conflicts —
+				// same name, different behavior — are rare and better surfaced by
+				// the skill itself when it runs.)
+				continue;
 			} else {
 				skillMap.set(skill.name, skill);
 				realPathSet.add(realPath);

@@ -375,9 +375,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// removal). Gated on noSkills/noPromptTemplates so those opt-outs keep their
 		// original semantics (no skill/prompt discovery at all, including from plugins).
 		const claudePlugins = discoverClaudePluginPaths();
-		this.pluginSkillPaths = !this.noSkills && claudePlugins.skillPaths.length > 0 ? claudePlugins.skillPaths : [];
+		this.pluginSkillPaths =
+			!this.noSkills && claudePlugins.skillPaths.length > 0 ? claudePlugins.skillPaths : [];
 		this.pluginPromptPaths =
-			!this.noPromptTemplates && claudePlugins.promptPaths.length > 0 ? claudePlugins.promptPaths : [];
+			!this.noPromptTemplates && claudePlugins.promptPaths.length > 0
+				? claudePlugins.promptPaths
+				: [];
 		let preTrustExtensions: LoadExtensionsResult | undefined;
 		if (options?.resolveProjectTrust) {
 			preTrustExtensions = await this.loadProjectTrustExtensions();
@@ -466,11 +469,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		const promptPaths = this.noPromptTemplates
 			? this.mergePaths(cliEnabledPrompts, this.additionalPromptTemplatePaths, this.pluginPromptPaths)
-			: this.mergePaths(
-					[...cliEnabledPrompts, ...enabledPrompts],
-					this.additionalPromptTemplatePaths,
-					this.pluginPromptPaths,
-				);
+			: this.mergePaths([...cliEnabledPrompts, ...enabledPrompts], this.additionalPromptTemplatePaths, this.pluginPromptPaths);
 
 		this.lastPromptPaths = promptPaths;
 		this.updatePromptsFromPaths(promptPaths, metadataByPath);
