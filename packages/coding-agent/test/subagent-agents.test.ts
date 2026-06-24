@@ -199,6 +199,39 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		}
 	});
 
+	it("PI_QUIET accepts true / yes / case-insensitive variants", () => {
+		for (const value of ["true", "TRUE", "yes", "Yes"]) {
+			const prev = process.env.PI_QUIET;
+			process.env.PI_QUIET = value;
+			try {
+				const calls: string[] = [];
+				console.warn = (msg: string) => calls.push(msg);
+				normalizeToolNames(["Read", "AskUserQuestion"]);
+				expect(calls).toHaveLength(0);
+			} finally {
+				if (prev === undefined) delete process.env.PI_QUIET;
+				else process.env.PI_QUIET = prev;
+			}
+		}
+	});
+
+	it("PI_QUIET=1 does NOT expand privileges: all-unmappable tools still → empty allowlist", () => {
+		const prev = process.env.PI_QUIET;
+		process.env.PI_QUIET = "1";
+		try {
+			const calls: string[] = [];
+			console.warn = (msg: string) => calls.push(msg);
+			const result = normalizeToolNames(["AskUserQuestion", "Skill"]);
+			// A restricted, ask-only agent authored for Claude Code must NOT inherit
+			// pi's full default tool set just because PI_QUIET silences the warning.
+			expect(result).toEqual([]);
+			expect(calls).toHaveLength(0);
+		} finally {
+			if (prev === undefined) delete process.env.PI_QUIET;
+			else process.env.PI_QUIET = prev;
+		}
+	});
+
 	it("does not warn when all declared tools map cleanly", () => {
 		const calls: string[] = [];
 		console.warn = (msg: string) => calls.push(msg);
