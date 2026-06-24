@@ -132,11 +132,17 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 	// Silence the dropped-tools warning so test output stays clean; assert on
 	// it explicitly in the dedicated test below.
 	const realWarn = console.warn;
+	const realQuiet = process.env.PI_QUIET;
 	beforeEach(() => {
 		console.warn = () => {};
+		// PI_QUIET may be set in the developer's shell env; clear it so the
+		// warning-suppression logic is deterministic per-test.
+		delete process.env.PI_QUIET;
 	});
 	afterEach(() => {
 		console.warn = realWarn;
+		if (realQuiet === undefined) delete process.env.PI_QUIET;
+		else process.env.PI_QUIET = realQuiet;
 	});
 
 	it("maps PascalCase Claude Code names to pi's lowercase registry", () => {
@@ -149,18 +155,18 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		expect(normalizeToolNames(["READ", "Grep"])).toEqual(expect.arrayContaining(["read", "grep"]));
 	});
 
-	it("drops names that have no pi equivalent (AskUserQuestion, Skill, Task, WebFetch)", () => {
-		const result = normalizeToolNames(["Read", "AskUserQuestion", "Skill", "Task", "WebFetch", "Grep"]);
+	it("drops names that have no pi equivalent (TodoWrite, UnknownTool)", () => {
+		const result = normalizeToolNames(["Read", "TodoWrite", "UnknownTool", "Grep"]);
 		expect(result).toEqual(expect.arrayContaining(["read", "grep"]));
-		expect(result).not.toContain("askuserquestion");
-		expect(result).not.toContain("skill");
+		expect(result).not.toContain("todowrite");
+		expect(result).not.toContain("unknowntool");
 	});
 
 	it("returns [] (empty allowlist, fail-safe) when declared tools are all unmappable", () => {
-		// A restricted agent authored for Claude Code (`tools: AskUserQuestion, Skill`)
+		// A restricted agent authored for Claude Code (`tools: TodoWrite, UnknownTool`)
 		// must NOT silently inherit pi's full default tool set (bash+write) — that
 		// would be a privilege expansion. Empty allowlist = child runs with no tools.
-		expect(normalizeToolNames(["AskUserQuestion", "Skill", "TodoWrite"])).toEqual([]);
+		expect(normalizeToolNames(["TodoWrite", "UnknownTool"])).toEqual([]);
 	});
 
 	it("returns undefined only when no tools were declared at all", () => {
@@ -172,13 +178,13 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 	it("warns to stderr listing dropped tool names (original casing preserved)", () => {
 		const calls: string[] = [];
 		console.warn = (msg: string) => calls.push(msg);
-		normalizeToolNames(["Read", "AskUserQuestion", "Skill"]);
+		normalizeToolNames(["Read", "TodoWrite", "UnknownTool"]);
 		expect(calls).toHaveLength(1);
 		// Both dropped names must appear (order-independent), and the mapped
 		// name "read" must NOT — if casing broke, "read" would match the
 		// dropped-name substring check.
-		expect(calls[0]).toMatch(/AskUserQuestion/);
-		expect(calls[0]).toMatch(/Skill/);
+		expect(calls[0]).toMatch(/TodoWrite/);
+		expect(calls[0]).toMatch(/UnknownTool/);
 		expect(calls[0]).not.toMatch(/\bread\b/);
 	});
 
@@ -188,11 +194,11 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		try {
 			const calls: string[] = [];
 			console.warn = (msg: string) => calls.push(msg);
-			const result = normalizeToolNames(["Read", "AskUserQuestion", "Skill"]);
+			const result = normalizeToolNames(["Read", "TodoWrite", "UnknownTool"]);
 			// Warning suppressed, but the fail-safe mapping behavior is unchanged.
 			expect(calls).toHaveLength(0);
 			expect(result).toEqual(expect.arrayContaining(["read"]));
-			expect(result).not.toContain("askuserquestion");
+			expect(result).not.toContain("todowrite");
 		} finally {
 			if (prev === undefined) delete process.env.PI_QUIET;
 			else process.env.PI_QUIET = prev;
@@ -206,7 +212,7 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 			try {
 				const calls: string[] = [];
 				console.warn = (msg: string) => calls.push(msg);
-				normalizeToolNames(["Read", "AskUserQuestion"]);
+				normalizeToolNames(["Read", "TodoWrite"]);
 				expect(calls).toHaveLength(0);
 			} finally {
 				if (prev === undefined) delete process.env.PI_QUIET;
@@ -221,9 +227,9 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		try {
 			const calls: string[] = [];
 			console.warn = (msg: string) => calls.push(msg);
-			const result = normalizeToolNames(["AskUserQuestion", "Skill"]);
-			// A restricted, ask-only agent authored for Claude Code must NOT inherit
-			// pi's full default tool set just because PI_QUIET silences the warning.
+			const result = normalizeToolNames(["TodoWrite", "UnknownTool"]);
+			// A restricted agent must NOT inherit pi's full default tool set just
+			// because PI_QUIET silences the warning.
 			expect(result).toEqual([]);
 			expect(calls).toHaveLength(0);
 		} finally {
@@ -250,16 +256,17 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		mkdirSync(claudeAgents, { recursive: true });
 		writeFileSync(
 			join(claudeAgents, "reviewer.md"),
-			"---\nname: reviewer\ndescription: review\ntools: Read, Grep, Glob, AskUserQuestion, Skill\n---\nbody\n",
+			"---\nname: reviewer\ndescription: review\ntools: Read, Grep, Glob, AskUserQuestion, Skill, TodoWrite\n---\nbody\n",
 		);
 		delete process.env.PI_CODING_AGENT_DIR;
 		withHome(dir);
 		try {
 			const { agents } = discoverAgents(join(dir, "cwd"), "user");
 			expect(agents).toHaveLength(1);
-			expect(agents[0].tools).toEqual(expect.arrayContaining(["read", "grep", "find"]));
-			expect(agents[0].tools).not.toContain("AskUserQuestion");
-			expect(agents[0].tools).not.toContain("Skill");
+			// pi-native names are lowercased; cross-CLI names (AskUserQuestion, Skill)
+			// are kept in canonical PascalCase form; unmappable names (TodoWrite) dropped.
+			expect(agents[0].tools).toEqual(expect.arrayContaining(["read", "grep", "find", "AskUserQuestion", "Skill"]));
+			expect(agents[0].tools).not.toContain("TodoWrite");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -271,7 +278,7 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		mkdirSync(claudeAgents, { recursive: true });
 		writeFileSync(
 			join(claudeAgents, "ask-only.md"),
-			"---\nname: ask-only\ndescription: ask\ntools: AskUserQuestion, Skill\n---\nbody\n",
+			"---\nname: ask-only\ndescription: ask\ntools: TodoWrite, UnknownTool\n---\nbody\n",
 		);
 		delete process.env.PI_CODING_AGENT_DIR;
 		withHome(dir);

@@ -17,6 +17,18 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
+	color?: string[];
+	skills?: string[];
+	effort?: string;
+	permissionMode?: string;
+	isolation?: string;
+	maxTurns?: number;
+	disallowedTools?: string[];
+	initialPrompt?: string;
+	background?: unknown;
+	memory?: unknown;
+	hooks?: unknown;
+	mcpServers?: unknown;
 }
 
 export interface AgentDiscoveryResult {
@@ -25,18 +37,22 @@ export interface AgentDiscoveryResult {
 }
 
 /**
- * pi's built-in tool names (lowercase): bash, edit, find, grep, ls, read, write.
- * Agent files shared with Claude Code / freecode use PascalCase names
- * (Read, Grep, Glob, Bash, Edit, Write, AskUserQuestion, Skill, Task, ...).
- * pi's `--tools` filter silently drops unknown names (see setActiveToolsByName
- * in agent-session.ts), so without normalization every declared tool would be
- * discarded and the subagent would fall back to the default tool set — ignoring
- * the frontmatter's intent entirely.
+ * Tool-name aliases mapping frontmatter tool names (case-insensitive) to
+ * canonical forms. Two tiers:
  *
- * This maps the Claude Code aliases onto pi's names and drops the ones that have
- * no pi equivalent (AskUserQuestion, Skill, Task, WebFetch, WebSearch, ...).
- * The list is intentionally exhaustive on the read/write/search/exec axis so a
- * shared agent file works on both CLIs.
+ *  1. pi-native tools (read, grep, find, ls, bash, edit, write) → lowercased
+ *     pi registered names. These are the tools `setActiveToolsByName` actually
+ *     activates at spawn time.
+ *  2. Cross-CLI tools (Skill, AskUserQuestion, WebFetch, WebSearch, Agent)
+ *     → PascalCase canonical names. pi may or may not have implementations for
+ *     these (the spawn path decides), but recognizing them here means
+ *     `normalizeToolNames` keeps them in the allowlist instead of dropping
+ *     them, and `subtractDisallowed` can match disallowedTools entries written
+ *     in either naming convention.
+ *
+ * Names absent from this map are treated as unmappable by `normalizeToolNames`
+ * (dropped with a warning) and passed through as-is by `subtractDisallowed`
+ * (lowercased, so they only match themselves).
  */
 const TOOL_NAME_ALIASES: Record<string, string> = {
 	read: "read",
@@ -47,12 +63,19 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 	bash: "bash",
 	edit: "edit",
 	write: "write",
+	skill: "Skill",
+	askuserquestion: "AskUserQuestion",
+	webfetch: "WebFetch",
+	websearch: "WebSearch",
+	agent: "Agent",
+	task: "Agent",
+	subagent: "Agent",
 };
 
 /**
- * Normalize a list of tool names from agent frontmatter to pi's registered names.
- * Case-insensitive; names with no pi equivalent (AskUserQuestion, Skill, Task,
- * WebFetch, ...) are dropped.
+ * Normalize a list of tool names from agent frontmatter to canonical forms
+ * (see TOOL_NAME_ALIASES). Case-insensitive; names absent from the alias map
+ * are dropped (with a warning) as having no pi or cross-CLI equivalent.
  *
  * Return contract (intentional, security-relevant):
  *   - `undefined` → the frontmatter declared no usable tools, OR no `tools:`
@@ -60,12 +83,12 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
  *     pi's default tool set. This is the "agent trusts the platform defaults"
  *     case.
  *   - `[]` (empty array) → the frontmatter DID declare tools, but every one of
- *     them was unmappable (e.g. `tools: AskUserQuestion, Skill` — a restricted,
- *     ask-only agent authored for Claude Code). Returning an empty allowlist
- *     makes the spawned pi run with NO tools (fail-safe) instead of silently
- *     inheriting full bash+write, which would invert the agent author's intent
- *     ("restricted agent" → "unrestricted agent"). The caller passes
- *     `--tools ""`, which `setActiveToolsByName` turns into an empty tool set.
+ *     them was unmappable (e.g. `tools: SomeUnknownTool` — a name with no entry
+ *     in TOOL_NAME_ALIASES). Returning an empty allowlist makes the spawned pi
+ *     run with NO tools (fail-safe) instead of silently inheriting full
+ *     bash+write, which would invert the agent author's intent ("restricted
+ *     agent" → "unrestricted agent"). The caller passes `--tools ""`, which
+ *     `setActiveToolsByName` turns into an empty tool set.
  *
  * Without this distinction, a cross-CLI shared agent file that intentionally
  * restricted tools to Claude-Code-only ones would gain unrestricted bash/write
@@ -108,6 +131,35 @@ export function normalizeToolNames(names: string[]): string[] | undefined {
 	return Array.from(normalized);
 }
 
+/**
+ * Subtract disallowed tool names from an allowlist.
+ *
+ * The allowlist is assumed to already be normalized (output of
+ * `normalizeToolNames` — canonical lowercase pi names or PascalCase canonical
+ * names for cross-CLI tools). The disallowed list is normalized here using the
+ * same alias map so that Claude-Code-style names (Read, Task, subagent, ...)
+ * are reduced to the same canonical form before subtraction.
+ *
+ * Return contract:
+ *   - `allowlist === undefined` → return `undefined`. The wildcard allowlist
+ *     (agent trusts platform defaults) is NOT narrowed by disallowedTools,
+ *     because the author didn't enumerate an explicit allowlist to begin with.
+ *   - Otherwise → return a new array with disallowed entries removed.
+ */
+export function subtractDisallowed(allowlist: string[] | undefined, disallowed: string[]): string[] | undefined {
+	if (allowlist === undefined) return undefined;
+	if (!disallowed || disallowed.length === 0) return allowlist;
+
+	const disallowedSet = new Set<string>();
+	for (const raw of disallowed) {
+		const key = raw.trim().toLowerCase();
+		if (!key) continue;
+		const mapped = TOOL_NAME_ALIASES[key] ?? key;
+		disallowedSet.add(mapped);
+	}
+	return allowlist.filter((tool) => !disallowedSet.has(tool));
+}
+
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
@@ -134,29 +186,62 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
 
-		if (!frontmatter.name || !frontmatter.description) {
+		const name = typeof frontmatter.name === "string" ? frontmatter.name : "";
+		const description = typeof frontmatter.description === "string" ? frontmatter.description : "";
+		if (!name || !description) {
 			continue;
 		}
 
-		const rawTools = frontmatter.tools
-			?.split(",")
-			.map((t: string) => t.trim())
-			.filter(Boolean);
-		const tools = rawTools && rawTools.length > 0 ? normalizeToolNames(rawTools) : undefined;
+		const rawTools =
+			typeof frontmatter.tools === "string"
+				? frontmatter.tools
+						.split(",")
+						.map((t: string) => t.trim())
+						.filter(Boolean)
+				: [];
+		const tools = rawTools.length > 0 ? normalizeToolNames(rawTools) : undefined;
+
+		const splitList = (value: unknown): string[] | undefined => {
+			if (typeof value !== "string") return undefined;
+			const parts = value
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean);
+			return parts.length > 0 ? parts : undefined;
+		};
+
+		const maxTurns =
+			typeof frontmatter.maxTurns === "number"
+				? frontmatter.maxTurns
+				: typeof frontmatter.maxTurns === "string" && frontmatter.maxTurns.trim()
+					? Number.parseInt(frontmatter.maxTurns, 10)
+					: undefined;
 
 		agents.push({
-			name: frontmatter.name,
-			description: frontmatter.description,
+			name,
+			description,
 			// Preserve the fail-safe contract from normalizeToolNames: `[]` (all
 			// tools unmappable) must stay `[]` so the child runs with no tools,
 			// not be collapsed to undefined (which would inherit full defaults).
 			tools,
-			model: frontmatter.model,
+			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			systemPrompt: body,
 			source,
 			filePath,
+			color: splitList(frontmatter.color),
+			skills: splitList(frontmatter.skills),
+			effort: typeof frontmatter.effort === "string" ? frontmatter.effort : undefined,
+			permissionMode: typeof frontmatter.permissionMode === "string" ? frontmatter.permissionMode : undefined,
+			isolation: typeof frontmatter.isolation === "string" ? frontmatter.isolation : undefined,
+			maxTurns,
+			disallowedTools: splitList(frontmatter.disallowedTools),
+			initialPrompt: typeof frontmatter.initialPrompt === "string" ? frontmatter.initialPrompt : undefined,
+			background: frontmatter.background,
+			memory: frontmatter.memory,
+			hooks: frontmatter.hooks,
+			mcpServers: frontmatter.mcpServers,
 		});
 	}
 
