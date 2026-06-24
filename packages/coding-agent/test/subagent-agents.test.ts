@@ -169,14 +169,17 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		expect(normalizeToolNames(["", "  "])).toBeUndefined();
 	});
 
-	it("warns to stderr listing dropped tool names", () => {
+	it("warns to stderr listing dropped tool names (original casing preserved)", () => {
 		const calls: string[] = [];
 		console.warn = (msg: string) => calls.push(msg);
 		normalizeToolNames(["Read", "AskUserQuestion", "Skill"]);
 		expect(calls).toHaveLength(1);
-		expect(calls[0]).toContain("AskUserQuestion");
-		expect(calls[0]).toContain("Skill");
-		expect(calls[0]).not.toContain("read");
+		// Both dropped names must appear (order-independent), and the mapped
+		// name "read" must NOT — if casing broke, "read" would match the
+		// dropped-name substring check.
+		expect(calls[0]).toMatch(/AskUserQuestion/);
+		expect(calls[0]).toMatch(/Skill/);
+		expect(calls[0]).not.toMatch(/\bread\b/);
 	});
 
 	it("does not warn when all declared tools map cleanly", () => {
@@ -237,6 +240,31 @@ describe("normalizeToolNames — Claude Code → pi tool mapping", () => {
 		const claudeAgents = join(dir, ".claude", "agents");
 		mkdirSync(claudeAgents, { recursive: true });
 		writeFileSync(join(claudeAgents, "bare.md"), "---\nname: bare\ndescription: bare\n---\nbody\n");
+		delete process.env.PI_CODING_AGENT_DIR;
+		withHome(dir);
+		try {
+			const { agents } = discoverAgents(join(dir, "cwd"), "user");
+			expect(agents).toHaveLength(1);
+			expect(agents[0].tools).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("end-to-end: whitespace-only tools value is treated as undeclared (inherits defaults)", () => {
+		// `tools: "   "` → filter(Boolean) → [] → length 0 guard short-circuits
+		// to undefined BEFORE normalizeToolNames runs. This pins the current
+		// contract: malformed/empty tools value = "trust platform defaults",
+		// NOT "run with no tools" (which would be the fail-safe [] path).
+		// If you change loadAgentsFromDir to route whitespace through
+		// normalizeToolNames, update this test to expect [].
+		const dir = mkdtempSync(join(tmpdir(), "pi-subagent-ws-"));
+		const claudeAgents = join(dir, ".claude", "agents");
+		mkdirSync(claudeAgents, { recursive: true });
+		writeFileSync(
+			join(claudeAgents, "ws.md"),
+			"---\nname: ws\ndescription: ws\ntools: \"   \"\n---\nbody\n",
+		);
 		delete process.env.PI_CODING_AGENT_DIR;
 		withHome(dir);
 		try {

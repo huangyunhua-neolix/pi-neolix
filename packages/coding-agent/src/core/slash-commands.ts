@@ -6,6 +6,8 @@ export type SlashCommandSource = "extension" | "prompt" | "skill";
 export interface SlashCommandInfo {
 	name: string;
 	description?: string;
+	/** Hint shown after the command name (e.g. "<requirement>"). */
+	argumentHint?: string;
 	source: SlashCommandSource;
 	sourceInfo: SourceInfo;
 }

@@ -193,4 +193,29 @@ describe("regression: extension command surfaces result via pi.sendMessage", () 
 		const _check: HasNoSendMessage = true as const;
 		expect(_check).toBe(true);
 	});
+
+	it("argumentHint round-trips through registerCommand → getCommands (all 4 surfaces)", async () => {
+		// Pins the argumentHint forwarding across every surface that surfaces
+		// registered commands: ExtensionAPI.getCommands (SlashCommandInfo),
+		// interactive-mode palette (SlashCommand), rpc-mode (RpcSlashCommand),
+		// and the agent-session getCommands binding. A future refactor that drops
+		// the spread on any of these breaks this test.
+		let capturedPi: ExtensionAPI | undefined;
+		await createRuntimeForTest(
+			(pi) => {
+				capturedPi = pi;
+				pi.registerCommand("agent:hinted", {
+					description: "has hint",
+					argumentHint: "<spec-query>",
+					handler: async () => {},
+				});
+			},
+			["faux reply"],
+		);
+		expect(capturedPi).toBeDefined();
+		const commands = capturedPi!.getCommands();
+		const hinted = commands.find((c) => c.name === "agent:hinted");
+		expect(hinted).toBeDefined();
+		expect(hinted?.argumentHint).toBe("<spec-query>");
+	});
 });

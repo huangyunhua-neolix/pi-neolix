@@ -2211,6 +2211,7 @@ export class AgentSession {
 			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
 				name: command.invocationName,
 				description: command.description,
+				...(command.argumentHint && { argumentHint: command.argumentHint }),
 				source: "extension",
 				sourceInfo: command.sourceInfo,
 			}));
@@ -2218,6 +2219,7 @@ export class AgentSession {
 			const templates: SlashCommandInfo[] = this.promptTemplates.map((template) => ({
 				name: template.name,
 				description: template.description,
+				...(template.argumentHint && { argumentHint: template.argumentHint }),
 				source: "prompt",
 				sourceInfo: template.sourceInfo,
 			}));
