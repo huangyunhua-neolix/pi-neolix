@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AgentConfig,
 	discoverAgents,
@@ -152,6 +152,48 @@ describe("subtractDisallowed", () => {
 
 	it("does not remove tools not in the disallowed list", () => {
 		expect(subtractDisallowed(["read", "bash"], ["write"])).toEqual(["read", "bash"]);
+	});
+
+	// FIX-12: unmapped disallowed names should warn (previously silently
+	// passed through lowercased, so a typo like `bashx` would never match).
+	it("warns when a disallowed name has no alias mapping (FIX-12)", () => {
+		delete process.env.PI_QUIET;
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const result = subtractDisallowed(["read", "bash"], ["bashx"]);
+			// bashx doesn't match any alias, so it's passed through lowercased
+			// and the allowlist is unchanged (bashx !== bash/read).
+			expect(result).toEqual(["read", "bash"]);
+			expect(warnSpy).toHaveBeenCalled();
+			const warnMsg = warnSpy.mock.calls[0][0] as string;
+			expect(warnMsg).toMatch(/bashx/);
+			expect(warnMsg).toMatch(/no alias mapping/i);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("does not warn for mapped disallowed names (FIX-12)", () => {
+		delete process.env.PI_QUIET;
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			subtractDisallowed(["read", "bash"], ["Read"]);
+			expect(warnSpy).not.toHaveBeenCalled();
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("suppresses unmapped-disallowed warning when PI_QUIET=1 (FIX-12)", () => {
+		vi.stubEnv("PI_QUIET", "1");
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			subtractDisallowed(["read", "bash"], ["typotool"]);
+			expect(warnSpy).not.toHaveBeenCalled();
+		} finally {
+			warnSpy.mockRestore();
+			vi.unstubAllEnvs();
+		}
 	});
 });
 

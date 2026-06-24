@@ -15,6 +15,9 @@ export type WebSearchToolInput = Static<typeof webSearchSchema>;
 const NOT_CONFIGURED_MESSAGE =
 	"WebSearch is not configured. Set WEB_SEARCH_API_KEY (and optionally WEB_SEARCH_PROVIDER) in settings.json.";
 
+const SEARCH_TIMEOUT_MS = 30_000;
+const SEARCH_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+
 interface TavilyResult {
 	title?: string;
 	url?: string;
@@ -46,13 +49,66 @@ async function executeTavilySearch(query: string, apiKey: string): Promise<strin
 			Authorization: `Bearer ${apiKey}`,
 		},
 		body: JSON.stringify({ query }),
+		signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
 	});
 	if (!response.ok) {
-		const body = await response.text().catch(() => "");
-		throw new Error(`Tavily search failed (${response.status}): ${body || response.statusText}`);
+		// FIX-4: never surface raw response body (may echo Authorization or
+		// provider-internal key material on auth errors). Return a sanitized
+		// status-coded message.
+		if (response.status === 401 || response.status === 403) {
+			throw new Error(`Tavily search failed (${response.status}): provider auth failed`);
+		}
+		throw new Error(`Tavily search failed (${response.status}): ${response.statusText}`);
 	}
-	const data = (await response.json()) as TavilyResponse;
+	// FIX-2: cap response body to prevent memory exhaustion.
+	const text = await readBodyCapped(response, SEARCH_MAX_BODY_BYTES);
+	let data: TavilyResponse;
+	try {
+		data = JSON.parse(text) as TavilyResponse;
+	} catch {
+		throw new Error(`Tavily search failed: malformed JSON response`);
+	}
 	return formatResults(data.results ?? []);
+}
+
+/**
+ * Read up to `maxBytes` from a Response body. Throws if the body exceeds
+ * `maxBytes`, preventing memory exhaustion from oversized responses.
+ */
+async function readBodyCapped(response: Response, maxBytes: number): Promise<string> {
+	const reader = response.body?.getReader();
+	if (!reader) {
+		return response.text();
+	}
+	let total = 0;
+	const chunks: Uint8Array[] = [];
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			try {
+				await reader.cancel();
+			} catch {
+				// ignore cancel errors
+			}
+			throw new Error(`response body exceeded ${maxBytes} byte cap`);
+		}
+		chunks.push(value);
+	}
+	const decoder = new TextDecoder("utf-8", { fatal: false });
+	let joined: Uint8Array;
+	if (chunks.length === 1) {
+		joined = chunks[0];
+	} else {
+		joined = new Uint8Array(total);
+		let offset = 0;
+		for (const c of chunks) {
+			joined.set(c, offset);
+			offset += c.byteLength;
+		}
+	}
+	return decoder.decode(joined);
 }
 
 async function executeSerperSearch(_query: string, _apiKey: string): Promise<string> {
@@ -107,10 +163,10 @@ export function createWebSearchToolDefinition(
 					content: [{ type: "text", text }] as TextContent[],
 					details: { provider, query },
 				};
-			} catch (error: any) {
+			} catch (error) {
 				return {
 					content: [
-						{ type: "text", text: `WebSearch error: ${error?.message ?? String(error)}` },
+						{ type: "text", text: `WebSearch error: ${error instanceof Error ? error.message : String(error)}` },
 					] as TextContent[],
 					details: undefined,
 				};

@@ -35,8 +35,34 @@ const pendingQuestions = new Map<string, PendingQuestion>();
 
 let _stdinStream: NodeJS.ReadableStream | null = process.stdin;
 
+// FIX-8: per-call `once("end")` accumulates to MaxListeners=10 and leaks.
+// Use a single shared "end" listener that fan-outs to all pending questions.
+let _stdinEndListenerAttached = false;
+const _stdinEndHandlers = new Set<(id: string) => void>();
+
+function _ensureStdinEndListener(): void {
+	const stream = _stdinStream;
+	if (!stream || _stdinEndListenerAttached) return;
+	_stdinEndListenerAttached = true;
+	// Raise the ceiling so multiple concurrent AUQ calls don't trip the
+	// default 10-listener warning even on other event types.
+	if (typeof stream.setMaxListeners === "function") {
+		stream.setMaxListeners(Math.max(stream.getMaxListeners?.() ?? 10, 50));
+	}
+	stream.on("end", () => {
+		for (const h of _stdinEndHandlers) {
+			for (const id of pendingQuestions.keys()) {
+				h(id);
+			}
+		}
+	});
+}
+
 export function _setStdinStreamForTesting(stream: NodeJS.ReadableStream | null): void {
 	_stdinStream = stream;
+	// Reset the shared-listener flag so the new stream gets a fresh listener.
+	_stdinEndListenerAttached = false;
+	_stdinEndHandlers.clear();
 }
 
 export function _clearPendingForTesting(): void {
@@ -76,7 +102,10 @@ export function deliverAskUserQuestionResponse(id: string, answers: Record<strin
  */
 export function awaitAskUserQuestionResponse(id: string): Promise<Record<string, unknown>> {
 	const stdinStream = _stdinStream;
-	const onStdinEnd = () => {
+
+	// FIX-8: register on the shared fan-out set instead of per-call once().
+	const onStdinEnd = (endId: string) => {
+		if (endId !== id) return;
 		const pending = pendingQuestions.get(id);
 		if (pending) {
 			pendingQuestions.delete(id);
@@ -84,15 +113,14 @@ export function awaitAskUserQuestionResponse(id: string): Promise<Record<string,
 		}
 	};
 	if (stdinStream) {
-		stdinStream.once("end", onStdinEnd);
+		_stdinEndHandlers.add(onStdinEnd);
+		_ensureStdinEndListener();
 	}
 
 	return new Promise<Record<string, unknown>>((resolve, reject) => {
 		pendingQuestions.set(id, { resolve, reject });
 	}).finally(() => {
-		if (stdinStream) {
-			stdinStream.removeListener("end", onStdinEnd);
-		}
+		_stdinEndHandlers.delete(onStdinEnd);
 	});
 }
 

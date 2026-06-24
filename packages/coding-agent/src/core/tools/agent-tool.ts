@@ -157,17 +157,67 @@ export function resolveSpawnArgs(opts: {
  * - `ask_user_question_response`: Delivered to the parent's own pending
  *   question (when the parent is itself a child of another process).
  */
+/**
+ * Minimal writable-stream interface for relay responses. Real `proc.stdin`
+ * (a `net.Socket`) satisfies this; test mocks provide just `{ write }`.
+ */
+export interface RelayStdin {
+	write: (data: string) => boolean;
+	once?: (event: string, cb: () => void) => void;
+	on?: (event: string, cb: (err: Error) => void) => void;
+	removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
+}
+
+/**
+ * FIX-10: write to a child stdin with backpressure handling.
+ *
+ * - Checks the return value of `write()`. When `false` (buffer full or child
+ *   closed stdin), waits for `'drain'` before resolving (if the stream
+ *   supports `once`). Otherwise resolves immediately.
+ * - Attaches a one-shot `'error'` listener so a closed/broken pipe doesn't
+ *   crash the parent process as an unhandled error.
+ *
+ * Returns a promise that resolves once the data is either written or the
+ * stream has drained.
+ */
+function writeWithBackpressure(stdin: RelayStdin, data: string): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const onError = (_err: Error) => {
+			stdin.removeListener?.("error", onError as unknown as (...args: unknown[]) => void);
+			// Swallow — the child will time out on its own. Logging would be
+			// noisy for an expected "child closed stdin" scenario.
+			resolve();
+		};
+		stdin.on?.("error", onError);
+		const ok = stdin.write(data);
+		if (ok) {
+			stdin.removeListener?.("error", onError as unknown as (...args: unknown[]) => void);
+			resolve();
+		} else if (stdin.once) {
+			stdin.once("drain", () => {
+				stdin.removeListener?.("error", onError as unknown as (...args: unknown[]) => void);
+				resolve();
+			});
+		} else {
+			// No drain event available (test mock) — resolve immediately.
+			stdin.removeListener?.("error", onError as unknown as (...args: unknown[]) => void);
+			resolve();
+		}
+	});
+}
+
 export function handleRelayEvent(
 	evt: PiEvent,
-	stdin: { write: (data: string) => boolean } | null,
+	stdin: RelayStdin | null,
 	onAskUserQuestion?: (evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>,
 ): void {
 	if (evt.__pi_event === "ask_user_question") {
 		if (onAskUserQuestion) {
 			onAskUserQuestion({ id: evt.id, questions: evt.questions })
-				.then((answers) => {
+				.then(async (answers) => {
 					if (stdin) {
-						stdin.write(
+						await writeWithBackpressure(
+							stdin,
 							encodeEvent({
 								__pi_event: "ask_user_question_response",
 								id: evt.id,
@@ -200,7 +250,8 @@ export function handleRelayEvent(
 				}
 			}
 			if (stdin) {
-				stdin.write(
+				void writeWithBackpressure(
+					stdin,
 					encodeEvent({
 						__pi_event: "ask_user_question_response",
 						id: evt.id,
@@ -223,10 +274,20 @@ export function handleRelayEvent(
 }
 
 export interface ProcessLineContext {
-	stdin: { write: (data: string) => boolean } | null;
+	stdin: RelayStdin | null;
 	onMessageEnd?: (msg: Message) => void;
 	onToolResultEnd?: (msg: Message) => void;
 	onAskUserQuestion?: (evt: { id: string; questions: unknown[] }) => Promise<Record<string, unknown>>;
+	/**
+	 * FIX-9: when true, `ask_user_question_response` events decoded from the
+	 * stream are silently dropped instead of being forwarded to
+	 * `deliverAskUserQuestionResponse`. This is set to `true` when processing
+	 * CHILD stdout (in `runOneAgentSpawn`) so a malicious or buggy child in
+	 * parallel mode cannot short-circuit a sibling's pending question by
+	 * emitting a response event with a foreign id. The parent's own responses
+	 * arrive via stdin (written by the grandparent), not via child stdout.
+	 */
+	dropResponses?: boolean;
 }
 
 /**
@@ -247,6 +308,13 @@ export function processLine(line: string, ctx: ProcessLineContext): boolean {
 	// Relay event interception: check before normal JSON message processing.
 	const evt = decodeLine(line);
 	if (evt) {
+		// FIX-9: a child emitting `ask_user_question_response` on its stdout
+		// can never legitimately resolve the parent's pending question.
+		// Responses are written to stdin by the grandparent, not emitted on
+		// stdout. Drop these events to prevent parallel-mode forgery.
+		if (evt.__pi_event === "ask_user_question_response" && ctx.dropResponses) {
+			return true;
+		}
 		handleRelayEvent(evt, ctx.stdin, ctx.onAskUserQuestion);
 		return true;
 	}
@@ -292,6 +360,13 @@ export type SpawnFn = (command: string, args: string[], options: SpawnOptions) =
  * is running under a generic runtime (node/bun), invoke `pi` directly so the
  * child resolves via PATH; otherwise re-run the current script with the
  * current executable.
+ *
+ * FIX-11: the previous fallback `{ command: "pi" }` spawned via PATH, which
+ * could execute a malicious `pi` binary planted earlier in PATH. Now:
+ *   - Try `PI_BIN_PATH` env var (absolute path).
+ *   - Try `pi` next to `process.execPath` (e.g. /usr/local/bin/pi next to node).
+ *   - If neither resolves to an absolute path that exists, throw rather than
+ *     blindly spawning a bare name.
  */
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
@@ -303,10 +378,24 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 	const execName = path.basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
 	if (!isGenericRuntime) {
+		// Compiled binary (e.g. bun build --compile): process.execPath IS pi.
 		return { command: process.execPath, args };
 	}
 
-	return { command: "pi", args };
+	// Generic runtime fallback: resolve pi to an absolute path.
+	const piBinPath = process.env.PI_BIN_PATH;
+	if (piBinPath && path.isAbsolute(piBinPath) && fs.existsSync(piBinPath)) {
+		return { command: piBinPath, args };
+	}
+	const piCandidate = path.join(path.dirname(process.execPath), "pi");
+	if (fs.existsSync(piCandidate)) {
+		return { command: piCandidate, args };
+	}
+	throw new Error(
+		"Could not resolve pi binary to an absolute path. " +
+			"Set PI_BIN_PATH or install pi alongside the runtime. " +
+			"Refusing to spawn via PATH (security: PATH spoofing risk).",
+	);
 }
 
 /**
@@ -406,7 +495,15 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 
 		const invocation = getPiInvocation(argv);
 		let buffer = "";
+		let stderrBuffer = "";
 		let wasAborted = false;
+
+		// FIX-5: cap stdout/stderr buffers at 1 MB to prevent OOM on a child
+		// that emits a single very long line with no newline. Once the cap is
+		// exceeded we drop further data and mark the result as truncated.
+		const MAX_BUFFER_BYTES = 1 * 1024 * 1024;
+		let stdoutCapped = false;
+		let stderrCapped = false;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const proc = spawnFn(invocation.command, invocation.args, {
@@ -426,10 +523,19 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 					result.messages.push(msg);
 				},
 				onAskUserQuestion,
+				// FIX-9: child stdout response events must not resolve the
+				// parent's own pending questions (parallel-forgery guard).
+				dropResponses: true,
 			};
 
 			proc.stdout?.on("data", (data: Buffer) => {
+				if (stdoutCapped) return;
 				buffer += data.toString();
+				if (buffer.length > MAX_BUFFER_BYTES) {
+					buffer = buffer.slice(0, MAX_BUFFER_BYTES);
+					stdoutCapped = true;
+					result.stderr += `\n[agent-tool] stdout truncated at ${MAX_BUFFER_BYTES} bytes\n`;
+				}
 				const lines = buffer.split("\n");
 				buffer = lines.pop() ?? "";
 				for (const line of lines) {
@@ -438,15 +544,35 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 			});
 
 			proc.stderr?.on("data", (data: Buffer) => {
-				result.stderr += data.toString();
+				if (stderrCapped) return;
+				stderrBuffer += data.toString();
+				if (stderrBuffer.length > MAX_BUFFER_BYTES) {
+					stderrBuffer = stderrBuffer.slice(0, MAX_BUFFER_BYTES);
+					stderrCapped = true;
+					stderrBuffer += `\n[agent-tool] stderr truncated at ${MAX_BUFFER_BYTES} bytes\n`;
+				}
 			});
 
+			// FIX-6: capture the SIGKILL timer so it can be cleared on clean
+			// exit, preventing a stale timer from firing on a recycled PID.
+			let sigkillTimer: NodeJS.Timeout | null = null;
+
 			proc.on("close", (code) => {
+				if (sigkillTimer) {
+					clearTimeout(sigkillTimer);
+					sigkillTimer = null;
+				}
 				if (buffer.trim()) processLine(buffer, processCtx);
 				resolve(code ?? 0);
 			});
 
-			proc.on("error", () => {
+			proc.on("error", (err: NodeJS.ErrnoException) => {
+				if (sigkillTimer) {
+					clearTimeout(sigkillTimer);
+					sigkillTimer = null;
+				}
+				// Preserve the spawn error message so callers see WHY it failed.
+				result.stderr += `\n[agent-tool] spawn error: ${err.message}\n`;
 				resolve(1);
 			});
 
@@ -454,32 +580,27 @@ export async function runOneAgentSpawn(opts: RunOneAgentSpawnOptions): Promise<S
 				const killProc = () => {
 					wasAborted = true;
 					proc.kill("SIGTERM");
-					setTimeout(() => {
+					sigkillTimer = setTimeout(() => {
 						if (!proc.killed) proc.kill("SIGKILL");
 					}, 5000);
+					// Don't keep the event loop alive solely for this timer.
+					sigkillTimer.unref();
 				};
 				if (signal.aborted) killProc();
 				else signal.addEventListener("abort", killProc, { once: true });
 			}
 		});
 
+		result.stderr = stderrBuffer + (result.stderr ? result.stderr : "");
+
 		result.exitCode = exitCode;
 		if (wasAborted) throw new Error("Agent was aborted");
 		return result;
 	} finally {
-		if (tmpPromptPath) {
-			try {
-				fs.unlinkSync(tmpPromptPath);
-			} catch {
-				// ignore
-			}
-		}
+		// FIX-7: use fs.rmSync recursive+force so partial files or extra
+		// entries inside the temp dir don't cause ENOTEMPTY leaks.
 		if (tmpPromptDir) {
-			try {
-				fs.rmdirSync(tmpPromptDir);
-			} catch {
-				// ignore
-			}
+			fs.rmSync(tmpPromptDir, { recursive: true, force: true });
 		}
 	}
 }
@@ -882,6 +1003,6 @@ export function createAgentToolDefinition(
 	};
 }
 
-export function createAgentTool(cwd: string, options?: AgentToolDefinitionOptions): AgentTool<any> {
+export function createAgentTool(cwd: string, options?: AgentToolDefinitionOptions): AgentTool<typeof agentSchema> {
 	return wrapToolDefinition(createAgentToolDefinition(cwd, options));
 }

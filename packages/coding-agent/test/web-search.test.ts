@@ -141,4 +141,82 @@ describe("web-search tool", () => {
 			expect(def.description).toContain("WEB_SEARCH_API_KEY");
 		});
 	});
+
+	// ---------------------------------------------------------------------------
+	// FIX-2: timeout + body size cap
+	// FIX-4: API key leak sanitization
+	// ---------------------------------------------------------------------------
+
+	describe("FIX-2 + FIX-4: timeout, body cap, and API key leak", () => {
+		beforeEach(() => {
+			process.env.WEB_SEARCH_API_KEY = "test-key";
+			process.env.WEB_SEARCH_PROVIDER = "tavily";
+		});
+
+		it("sanitizes 401 response to not include API key or raw body (FIX-4)", async () => {
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response('{"error":"invalid api key sk-leaked-secret-12345"}', {
+						status: 401,
+						headers: { "Content-Type": "application/json" },
+					}),
+			) as any;
+
+			const tool = createWebSearchTool(process.cwd());
+			const result = await tool.execute("fix4-1", { query: "test" });
+			const text = getText(result);
+			expect(text).toMatch(/WebSearch error/i);
+			expect(text).toMatch(/provider auth failed/i);
+			// The raw body containing a key-like string must NOT be surfaced.
+			expect(text).not.toContain("sk-leaked-secret-12345");
+			expect(text).not.toContain("invalid api key");
+		});
+
+		it("sanitizes 403 response to not include raw body (FIX-4)", async () => {
+			globalThis.fetch = vi.fn(async () => new Response("forbidden: token revoked", { status: 403 })) as any;
+
+			const tool = createWebSearchTool(process.cwd());
+			const result = await tool.execute("fix4-2", { query: "test" });
+			const text = getText(result);
+			expect(text).toMatch(/provider auth failed/i);
+			expect(text).not.toContain("forbidden");
+			expect(text).not.toContain("token revoked");
+		});
+
+		it("passes a timeout signal to fetch (FIX-2)", async () => {
+			const fetchMock = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ results: [] }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					}),
+			) as any;
+			globalThis.fetch = fetchMock;
+
+			await executeSearch("test", { provider: "tavily", apiKey: "k" });
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const callOpts = fetchMock.mock.calls[0][1] as Record<string, unknown>;
+			expect(callOpts.signal).toBeDefined();
+			// AbortSignal.timeout returns a signal that will abort after the timeout.
+			expect(callOpts.signal).toBeInstanceOf(AbortSignal);
+		});
+
+		it("aborts when response body exceeds size cap (FIX-2)", async () => {
+			// Create a response with a body larger than 5 MB.
+			const hugeBody = "x".repeat(6 * 1024 * 1024);
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(hugeBody, {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					}),
+			) as any;
+
+			const tool = createWebSearchTool(process.cwd());
+			const result = await tool.execute("fix2-1", { query: "test" });
+			const text = getText(result);
+			expect(text).toMatch(/WebSearch error/i);
+			expect(text).toMatch(/exceeded|byte cap/i);
+		});
+	});
 });

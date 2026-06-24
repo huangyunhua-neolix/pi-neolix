@@ -210,4 +210,56 @@ describe("AskUserQuestion tool", () => {
 			expect(text).toContain("stdin");
 		});
 	});
+
+	// ---------------------------------------------------------------------------
+	// FIX-8: shared stdin "end" listener — no per-call once() accumulation
+	// ---------------------------------------------------------------------------
+
+	describe("FIX-8: shared stdin end listener", () => {
+		it("does not accumulate per-call end listeners across multiple AUQ calls", async () => {
+			const stdinStream = new PassThrough();
+			_setStdinStreamForTesting(stdinStream);
+			const listenerCountBefore = stdinStream.listenerCount("end");
+
+			const mockCtx = {
+				mode: "json",
+				hasUI: false,
+			} as unknown as ExtensionContext;
+			const definition = createAskUserQuestionToolDefinition(process.cwd());
+
+			// Fire 15 concurrent AUQ calls — previously this would trip
+			// MaxListeners (10) because each call added a once("end").
+			const promises: Promise<unknown>[] = [];
+			for (let i = 0; i < 15; i++) {
+				promises.push(
+					definition.execute(
+						`fix8-${i}`,
+						{
+							questions: [{ question: `Q${i}`, options: [{ label: "A" }] }],
+						},
+						undefined,
+						undefined,
+						mockCtx,
+					),
+				);
+			}
+
+			// Deliver responses to all pending questions.
+			await vi.waitFor(() => {
+				for (const line of capturedOutput.split("\n")) {
+					const evt = decodeLine(line);
+					if (evt && evt.__pi_event === "ask_user_question") {
+						deliverAskUserQuestionResponse(evt.id, { "0": "A" });
+					}
+				}
+			});
+
+			await Promise.all(promises);
+
+			// After all resolve, the shared listener set should be cleaned up.
+			// The listener count should not have grown by 15.
+			const listenerCountAfter = stdinStream.listenerCount("end");
+			expect(listenerCountAfter - listenerCountBefore).toBeLessThanOrEqual(1);
+		});
+	});
 });

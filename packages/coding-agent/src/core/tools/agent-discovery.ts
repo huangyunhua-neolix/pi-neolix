@@ -153,11 +153,31 @@ export function subtractDisallowed(allowlist: string[] | undefined, disallowed: 
 	if (!disallowed || disallowed.length === 0) return allowlist;
 
 	const disallowedSet = new Set<string>();
+	const unmapped: string[] = [];
 	for (const raw of disallowed) {
 		const key = raw.trim().toLowerCase();
 		if (!key) continue;
-		const mapped = TOOL_NAME_ALIASES[key] ?? key;
-		disallowedSet.add(mapped);
+		const mapped = TOOL_NAME_ALIASES[key];
+		if (mapped) {
+			disallowedSet.add(mapped);
+		} else {
+			// FIX-12: previously unmapped names were silently passed through
+			// (lowercased), so a typo like `bashx` would never match anything
+			// and the disallowed entry would be a no-op. Warn so authors notice.
+			disallowedSet.add(key);
+			unmapped.push(raw.trim());
+		}
+	}
+	if (unmapped.length > 0) {
+		const quietFlag = process.env.PI_QUIET;
+		const quiet = quietFlag === "1" || quietFlag?.toLowerCase() === "true" || quietFlag?.toLowerCase() === "yes";
+		if (!quiet) {
+			// eslint-disable-next-line no-console
+			console.warn(
+				`[subagent] ${unmapped.length} disallowedTools entr${unmapped.length === 1 ? "y" : "ies"} had no alias mapping: ` +
+					`${unmapped.join(", ")}. These will only match tools with the exact same (lowercased) name.`,
+			);
+		}
 	}
 	return allowlist.filter((tool) => !disallowedSet.has(tool));
 }
