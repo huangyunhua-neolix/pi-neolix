@@ -125,6 +125,24 @@ function buildPiAdaptationPreamble(agentName: string): string {
 	].join("\n");
 }
 
+/**
+ * Parse an `/agent:` input line into a typed action. Pure (no side effects) so
+ * it is unit-testable. "off" is a reserved name: `/agent:off` always parses as
+ * kind "off" (exit), so an agent literally named "off" cannot be activated via
+ * the switch command — dispatch it one-shot via the `subagent` tool, or rename.
+ */
+export function parseAgentSwitchInput(
+	text: string,
+): { kind: "passthrough" | "off" | "switch"; name: string; task: string } {
+	if (!text.startsWith("/agent:")) return { kind: "passthrough", name: "", task: "" };
+	const rest = text.slice("/agent:".length);
+	const sp = rest.indexOf(" ");
+	const name = (sp === -1 ? rest : rest.slice(0, sp)).trim();
+	const task = sp === -1 ? "" : rest.slice(sp + 1).trim();
+	if (name === "off") return { kind: "off", name, task };
+	return { kind: "switch", name, task };
+}
+
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -1204,82 +1222,109 @@ function registerAgentSwitchHandler(pi: ExtensionAPI): void {
 	// synchronously — works in both -p and interactive, no microtask/
 	// sendUserMessage re-entrancy. before_agent_start (registered in the default
 	// export) injects the agent's system prompt for that and every later turn.
-	pi.on("input", async (event, ctx) => {
-		const text = event.text ?? "";
-		if (!text.startsWith("/agent:")) return; // pass-through (action: continue)
+		pi.on("input", async (event, ctx) => {
+		const parsed = parseAgentSwitchInput(event.text ?? "");
+		if (parsed.kind === "passthrough") return; // not an /agent: input -> continue
 
-		const rest = text.slice("/agent:".length);
-		const sp = rest.indexOf(" ");
-		const name = (sp === -1 ? rest : rest.slice(0, sp)).trim();
-		const task = sp === -1 ? "" : rest.slice(sp + 1).trim();
+		const { name, task } = parsed;
+		const prevActive = activeAgentState; // rollback target on error (A3)
 
-		// /agent:off — exit agent mode.
-		if (name === "off") {
-			if (!activeAgentState) {
-				ctx.ui.notify("Not in agent mode.", "warning");
-				return { action: "handled" as const };
-			}
-			const was = activeAgentState.agent.name;
-			pi.setActiveTools(activeAgentState.prevTools);
-			pi.setSessionName(activeAgentState.prevSessionName ?? "");
-			activeAgentState = null;
-			// Next turn's before_agent_start returns undefined → agent-session
-			// resets to the base system prompt automatically.
-			ctx.ui.notify(`Exited agent mode (was ${was}).`, "info");
-			return { action: "handled" as const };
-		}
-
-		// Re-discover at invocation time so renamed/added agents are picked up.
-		const current = discoverAgents(ctx.cwd, "user");
-		const agentCfg = current.agents.find((a) => a.name === name);
-		if (!agentCfg) {
-			const available = current.agents.map((a) => a.name).join(", ") || "none";
-			ctx.ui.notify(`Unknown agent: "${name}". Available: ${available}`, "error");
-			return { action: "handled" as const };
-		}
-
-		// One-time trust prompt (first switch of this agent in the process).
-		// Unlike the isolated `subagent` tool, /agent:<name> runs the agent's
-		// systemPrompt IN this session with full conversation history + active
-		// tools — so a third-party agent (e.g. from ~/.claude/agents) could read
-		// prior turns. Confirm once per agent; remember the decision. Skipped
-		// when there is no dialog UI (e.g. -p print mode: the user invoked it
-		// explicitly, so proceed without a modal).
-		if (ctx.hasUI && !trustedAgentNames.has(agentCfg.name)) {
-			const ok = await ctx.ui.confirm(
-				`Switch to agent "${agentCfg.name}"?`,
-				`This switches the CURRENT session to run as "${agentCfg.name}". Its system prompt runs HERE — with access to your full conversation history and active tools — NOT in an isolated subprocess.\n\nSource: ${agentCfg.filePath}\n\nOnly continue for agents you trust.`,
+		// A2: reject mid-stream switch. The `input` event fires before the
+		// streaming branch in prompt(), so a `/agent:` typed during a running turn
+		// would otherwise call setActiveTools/setSessionName mid-turn, mutating the
+		// in-flight turn's tool set and systemPrompt. Consume the input; the user
+		// re-issues when idle (or aborts the turn first).
+		if (event.streamingBehavior !== undefined) {
+			ctx.ui.notify(
+				"Agent switch/exit ignored during a running turn; wait for it to finish or abort, then re-issue.",
+				"warning",
 			);
-			if (!ok) {
-				ctx.ui.notify("Switch cancelled.", "info");
+			return { action: "handled" as const };
+		}
+
+		try {
+			// /agent:off — exit agent mode. "off" is reserved (see parseAgentSwitchInput).
+			if (parsed.kind === "off") {
+				if (!activeAgentState) {
+					if (task) {
+						ctx.ui.notify("Not in agent mode; running task as base.", "info");
+						return { action: "transform" as const, text: task };
+					}
+					ctx.ui.notify("Not in agent mode.", "warning");
+					return { action: "handled" as const };
+				}
+				const was = activeAgentState.agent.name;
+				pi.setActiveTools(activeAgentState.prevTools);
+				pi.setSessionName(activeAgentState.prevSessionName ?? "");
+				activeAgentState = null;
+				// Next turn's before_agent_start returns undefined -> agent-session
+				// resets to the base system prompt automatically.
+				ctx.ui.notify(`Exited agent mode (was ${was}).`, "info");
+				// `/agent:off <task>` -> exit, then run the task as a base turn.
+				if (task) return { action: "transform" as const, text: task };
 				return { action: "handled" as const };
 			}
-			trustedAgentNames.add(agentCfg.name);
-		}
 
-		// Snapshot current tools + session name ONCE (before the first switch)
-		// so /agent:off restores them. Switching between agents keeps the
-		// original snapshot.
-		const prevTools = activeAgentState ? activeAgentState.prevTools : pi.getActiveTools();
-		const prevSessionName = activeAgentState ? activeAgentState.prevSessionName : pi.getSessionName();
-		activeAgentState = { agent: agentCfg, prevTools, prevSessionName };
+			// /agent:<name> [task] — re-discover at invocation time.
+			const current = discoverAgents(ctx.cwd, "user");
+			const agentCfg = current.agents.find((a) => a.name === name);
+			if (!agentCfg) {
+				const available = current.agents.map((a) => a.name).join(", ") || "none";
+				ctx.ui.notify(`Unknown agent: "${name}". Available: ${available}`, "error");
+				return { action: "handled" as const };
+			}
 
-		// agent.tools contract (see normalizeToolNames in agents.ts):
-		//   undefined → inherit defaults (prevTools); [] → no tools; [...] → allowlist
-		if (agentCfg.tools) {
-			pi.setActiveTools(agentCfg.tools);
-		} else {
-			pi.setActiveTools(prevTools);
-		}
-		pi.setSessionName(`▸ ${agentCfg.name}`);
+			// One-time trust prompt (first switch of this agent in the process).
+			// Unlike the isolated `subagent` tool, /agent:<name> runs the agent's
+			// systemPrompt IN this session with full conversation history + active
+			// tools — so a third-party agent (e.g. from ~/.claude/agents) could read
+			// prior turns. Confirm once per agent; remember the decision. Skipped
+			// when there is no dialog UI (e.g. -p print mode: the user invoked it
+			// explicitly, so proceed without a modal).
+			if (ctx.hasUI && !trustedAgentNames.has(agentCfg.name)) {
+				const ok = await ctx.ui.confirm(
+					`Switch to agent "${agentCfg.name}"?`,
+					`This switches the CURRENT session to run as "${agentCfg.name}". Its system prompt runs HERE — with access to your full conversation history and active tools — NOT in an isolated subprocess.\n\nSource: ${agentCfg.filePath}\n\nOnly continue for agents you trust.`,
+				);
+				if (!ok) {
+					ctx.ui.notify("Switch cancelled.", "info");
+					return { action: "handled" as const };
+				}
+				trustedAgentNames.add(agentCfg.name);
+			}
 
-		if (task) {
-			ctx.ui.notify(`Switched to agent: ${agentCfg.name}  ( /agent:off to exit )`, "info");
-			// Transform the input into the task text; prompt() then runs a normal
-			// turn with before_agent_start injecting the agent persona.
-			return { action: "transform" as const, text: task };
+			// Snapshot current tools + session name ONCE (before the first switch)
+			// so /agent:off restores them. Switching between agents keeps the
+			// original snapshot.
+			const prevTools = activeAgentState ? activeAgentState.prevTools : pi.getActiveTools();
+			const prevSessionName = activeAgentState ? activeAgentState.prevSessionName : pi.getSessionName();
+			activeAgentState = { agent: agentCfg, prevTools, prevSessionName };
+
+			// agent.tools contract (see normalizeToolNames in agents.ts):
+			//   undefined -> inherit defaults (prevTools); [] -> no tools; [...] -> allowlist
+			if (agentCfg.tools) {
+				pi.setActiveTools(agentCfg.tools);
+			} else {
+				pi.setActiveTools(prevTools);
+			}
+			pi.setSessionName(`▸ ${agentCfg.name}`);
+
+			if (task) {
+				ctx.ui.notify(`Switched to agent: ${agentCfg.name}  ( /agent:off to exit )`, "info");
+				// Transform the input into the task text; prompt() then runs a normal
+				// turn with before_agent_start injecting the agent persona.
+				return { action: "transform" as const, text: task };
+			}
+			ctx.ui.notify(`Switched to agent: ${agentCfg.name}. Type your request.  ( /agent:off to exit )`, "info");
+			return { action: "handled" as const };
+		} catch (e) {
+			// A3: rollback any partial activation so the persona can't get stuck on
+			// and the raw `/agent:` command is never sent to the model as a user
+			// message (emitInput's outer catch would otherwise fall through to
+			// "continue"). Consume the input and surface the error.
+			activeAgentState = prevActive;
+			ctx.ui.notify(`Agent switch failed: ${String(e)}`, "error");
+			return { action: "handled" as const };
 		}
-		ctx.ui.notify(`Switched to agent: ${agentCfg.name}. Type your request.  ( /agent:off to exit )`, "info");
-		return { action: "handled" as const };
 	});
 }
