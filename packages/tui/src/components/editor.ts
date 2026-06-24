@@ -699,13 +699,13 @@ export class Editor implements Component, Focusable {
 					this.setCursorCol(result.cursorCol);
 
 					// Determine the completed command text on the cursor line.
-					// /skill:<name> commands take a task argument after the command, so
+					// /skill:<name> and /agent:<name> commands take a task argument after the command, so
 					// selecting one from the autocomplete menu should stay in the editor
 					// (let the user append their input) instead of falling through to
 					// submit. Built-in immediate commands (e.g. /compact, /model) keep
 					// the original select-and-execute behaviour.
 					const completedCommand = result.lines[result.cursorLine]?.trimStart() ?? "";
-					if (completedCommand.startsWith("/skill:")) {
+					if (completedCommand.startsWith("/skill:") || completedCommand.startsWith("/agent:")) {
 						this.cancelAutocomplete();
 						this.tui.requestRender();
 						if (this.onChange) this.onChange(this.getText());

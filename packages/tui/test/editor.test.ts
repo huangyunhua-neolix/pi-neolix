@@ -2858,6 +2858,84 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("keeps /agent:<name> in editor (selected, not submitted) when confirmed", async () => {
+			// /agent:<name> takes a task argument (the requirement), so selecting it
+			// from the autocomplete menu (Enter) must stay in the editor for the user
+			// to append their requirement, instead of falling through to submit
+			// (which would dispatch the agent before the requirement is written).
+			// Mirrors the /skill:<name> behaviour above.
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "agent:code-reviewer", description: "Review code" },
+					{ name: "compact", description: "Compact context" },
+				],
+				process.cwd(),
+			);
+			editor.setAutocompleteProvider(provider);
+
+			let submitted = false;
+			editor.onSubmit = () => {
+				submitted = true;
+			};
+
+			// Open the menu by typing the command prefix
+			editor.handleInput("/");
+			editor.handleInput("a");
+			editor.handleInput("g");
+			editor.handleInput("e");
+			editor.handleInput("n");
+			editor.handleInput("t");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			// Confirm the first suggestion with Enter — first Enter only SELECTS
+			editor.handleInput("\r");
+
+			// Should NOT submit; the command stays in the editor with a trailing space
+			assert.strictEqual(submitted, false);
+			assert.strictEqual(editor.getText(), "/agent:code-reviewer ");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("submits /agent:<name> + requirement on a second Enter after the fill", async () => {
+			// End-to-end of the desired UX: first Enter only SELECTS the agent (fills
+			// the input), then the user types the requirement, then the second Enter
+			// submits — dispatching the agent WITH the requirement attached.
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const provider = new CombinedAutocompleteProvider(
+				[{ name: "agent:code-reviewer", description: "Review code" }],
+				process.cwd(),
+			);
+			editor.setAutocompleteProvider(provider);
+
+			let submitted = "";
+			editor.onSubmit = (text: string) => {
+				submitted = text;
+			};
+
+			// 1) Select the agent from the menu — first Enter only fills.
+			editor.handleInput("/");
+			editor.handleInput("a");
+			editor.handleInput("g");
+			editor.handleInput("e");
+			editor.handleInput("n");
+			editor.handleInput("t");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			editor.handleInput("\r");
+			assert.strictEqual(submitted, "");
+			assert.strictEqual(editor.getText(), "/agent:code-reviewer ");
+
+			// 2) Type the requirement after the filled command.
+			editor.handleInput("review the diff for race conditions");
+			assert.strictEqual(submitted, "");
+
+			// 3) Second Enter submits the full command + requirement.
+			editor.handleInput("\r");
+			assert.strictEqual(submitted, "/agent:code-reviewer review the diff for race conditions");
+		});
+
 		it("submits built-in /compact immediately when confirmed from menu", async () => {
 			// Built-in immediate commands (no task argument) keep the original
 			// select-and-execute behaviour.
