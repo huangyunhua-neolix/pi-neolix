@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { isKeyRelease, isKeyRepeat, isKittyProtocolActive, setKittyProtocolActive } from "../src/keys.ts";
 
 /**
@@ -76,6 +76,12 @@ describe("isKeyRepeat", () => {
 });
 
 describe("isKittyProtocolActive / setKittyProtocolActive", () => {
+	afterEach(() => {
+		// Reset the module-level flag so each case starts from a known baseline,
+		// independent of the order tests run in.
+		setKittyProtocolActive(false);
+	});
+
 	it("defaults to false at module load time within this test file's isolation", () => {
 		// Establish a known baseline.
 		setKittyProtocolActive(false);

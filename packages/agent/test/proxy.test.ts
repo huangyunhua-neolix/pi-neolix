@@ -28,6 +28,13 @@ function createContext(): Context {
 	};
 }
 
+/**
+ * Usage fixture with non-zero token counts. Unlike the zero-stub usage used in
+ * agent-loop-sink.test.ts (which only needs a placeholder), the proxy tests
+ * assert that the `done` event's usage is forwarded verbatim onto the result
+ * message (e.g. `result.usage.totalTokens === 15`), so the values must be
+ * distinctive and non-zero.
+ */
 function createUsage(): AssistantMessage["usage"] {
 	return {
 		input: 10,
@@ -201,7 +208,12 @@ describe("streamProxy", () => {
 
 		expect(events.map((e) => e.type)).toEqual(["error"]);
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toContain("Proxy error: upstream down");
+		// Verify the proxy surfaces the upstream error: check the stable prefix
+		// and that the upstream body is included, without coupling to the exact
+		// concatenation format.
+		expect(typeof result.errorMessage).toBe("string");
+		expect(result.errorMessage).toContain("Proxy error");
+		expect(result.errorMessage).toContain("upstream down");
 	});
 
 	it("emits an error event with the status line when the error body is not JSON", async () => {

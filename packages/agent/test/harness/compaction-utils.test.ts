@@ -295,7 +295,8 @@ describe("serializeConversation", () => {
 		} as unknown as Message;
 		const result = serializeConversation([message]);
 		expect(result).toContain("[Assistant tool calls]: weird(self=");
-		// Either a JSON representation or the unserializable marker must appear
-		expect(result.includes("[unserializable]") || result.includes("{")).toBe(true);
+		// A circular reference makes JSON.stringify throw, so safeJsonStringify
+		// must fall back to the explicit [unserializable] marker.
+		expect(result).toContain("[unserializable]");
 	});
 });

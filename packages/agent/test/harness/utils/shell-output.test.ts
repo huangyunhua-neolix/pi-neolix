@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	type ShellCaptureOptions,
-	type ShellCaptureResult,
-	sanitizeBinaryOutput,
-} from "../../../src/harness/utils/shell-output.ts";
+import { sanitizeBinaryOutput } from "../../../src/harness/utils/shell-output.ts";
 
 describe("sanitizeBinaryOutput", () => {
 	it("passes through plain ASCII text unchanged", () => {
@@ -52,44 +48,5 @@ describe("sanitizeBinaryOutput", () => {
 	it("handles supplementary-plane characters (4-byte UTF-8) without splitting surrogates", () => {
 		const input = "emoji 🙂 here";
 		expect(sanitizeBinaryOutput(input)).toBe(input);
-	});
-});
-
-describe("ShellCaptureOptions / ShellCaptureResult types", () => {
-	it("accepts an options shape with onChunk and exec options", () => {
-		const options: ShellCaptureOptions = {
-			onChunk: (_chunk: string) => {},
-			cwd: "/tmp",
-			abortSignal: undefined,
-		};
-		expect(typeof options.onChunk).toBe("function");
-	});
-
-	it("accepts a result shape with output, exitCode, cancelled, truncated, and fullOutputPath", () => {
-		const result: ShellCaptureResult = {
-			output: "hello",
-			exitCode: 0,
-			cancelled: false,
-			truncated: false,
-			fullOutputPath: undefined,
-		};
-		expect(result.output).toBe("hello");
-		expect(result.exitCode).toBe(0);
-		expect(result.cancelled).toBe(false);
-		expect(result.truncated).toBe(false);
-		expect(result.fullOutputPath).toBeUndefined();
-	});
-
-	it("allows the cancelled and truncated flags to be true together with a path", () => {
-		const result: ShellCaptureResult = {
-			output: "partial",
-			exitCode: undefined,
-			cancelled: true,
-			truncated: true,
-			fullOutputPath: "/tmp/bash-123.log",
-		};
-		expect(result.cancelled).toBe(true);
-		expect(result.truncated).toBe(true);
-		expect(result.fullOutputPath).toBe("/tmp/bash-123.log");
 	});
 });

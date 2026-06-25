@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { CURRENT_SESSION_VERSION, type FileEntry, migrateSessionEntries } from "../../src/core/session-manager.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	type FileEntry,
+	migrateSessionEntries,
+	type SessionHeader,
+	type SessionMessageEntry,
+} from "../../src/core/session-manager.ts";
 
 describe("migrateSessionEntries", () => {
 	it("should add id/parentId to v1 entries", () => {
@@ -25,11 +31,11 @@ describe("migrateSessionEntries", () => {
 		migrateSessionEntries(entries);
 
 		// Header should have version set (v3 is current after hookMessage->custom migration)
-		expect((entries[0] as any).version).toBe(3);
+		expect((entries[0] as SessionHeader).version).toBe(3);
 
 		// Entries should have id/parentId
-		const msg1 = entries[1] as any;
-		const msg2 = entries[2] as any;
+		const msg1 = entries[1] as SessionMessageEntry;
+		const msg2 = entries[2] as SessionMessageEntry;
 
 		expect(msg1.id).toBeDefined();
 		expect(msg1.id.length).toBe(8);
@@ -71,9 +77,9 @@ describe("migrateSessionEntries", () => {
 		migrateSessionEntries(entries);
 
 		// IDs should be unchanged
-		expect((entries[1] as any).id).toBe("abc12345");
-		expect((entries[2] as any).id).toBe("def67890");
-		expect((entries[2] as any).parentId).toBe("abc12345");
+		expect((entries[1] as SessionMessageEntry).id).toBe("abc12345");
+		expect((entries[2] as SessionMessageEntry).id).toBe("def67890");
+		expect((entries[2] as SessionMessageEntry).parentId).toBe("abc12345");
 	});
 
 	it("migrates a v2 session (with hookMessage role) to v3 by renaming role to custom", () => {
@@ -91,13 +97,15 @@ describe("migrateSessionEntries", () => {
 		migrateSessionEntries(entries);
 
 		// Header bumped to v3.
-		expect((entries[0] as any).version).toBe(3);
+		expect((entries[0] as SessionHeader).version).toBe(3);
 		// hookMessage role renamed to custom; id/parentId preserved.
-		const msg = entries[1] as any;
+		const msg = entries[1] as SessionMessageEntry;
 		expect(msg.id).toBe("abc12345");
 		expect(msg.parentId).toBeNull();
-		expect(msg.message.role).toBe("custom");
-		expect(msg.message.content).toBe("hook payload");
+		// AgentMessage is a union; assert the post-migration shape we read.
+		const message = msg.message as { role: string; content: unknown };
+		expect(message.role).toBe("custom");
+		expect(message.content).toBe("hook payload");
 	});
 
 	it("is a no-op on entries already at the current version", () => {
@@ -133,7 +141,7 @@ describe("migrateSessionEntries", () => {
 		const before = JSON.parse(JSON.stringify(entries));
 		migrateSessionEntries(entries);
 		expect(entries).toEqual(before);
-		expect((entries[0] as any).version).toBe(CURRENT_SESSION_VERSION);
+		expect((entries[0] as SessionHeader).version).toBe(CURRENT_SESSION_VERSION);
 	});
 
 	it("migrates an older (v1) fixture all the way to the current version in one pass", () => {
@@ -154,10 +162,10 @@ describe("migrateSessionEntries", () => {
 
 		migrateSessionEntries(entries);
 
-		expect((entries[0] as any).version).toBe(CURRENT_SESSION_VERSION);
+		expect((entries[0] as SessionHeader).version).toBe(CURRENT_SESSION_VERSION);
 
-		const m1 = entries[1] as any;
-		const m2 = entries[2] as any;
+		const m1 = entries[1] as SessionMessageEntry;
+		const m2 = entries[2] as SessionMessageEntry;
 		// Tree structure added (v1 -> v2).
 		expect(m1.id).toBeDefined();
 		expect(m1.parentId).toBeNull();
@@ -185,7 +193,7 @@ describe("migrateSessionEntries", () => {
 
 		migrateSessionEntries(entries);
 
-		const msg = entries[0] as any;
+		const msg = entries[0] as SessionMessageEntry;
 		expect(msg.id).toBeDefined();
 		expect(msg.parentId).toBeNull();
 	});

@@ -149,7 +149,13 @@ describe("parseStreamingJson", () => {
 	});
 
 	it("returns an empty object for truly unparseable input", () => {
-		expect(parseStreamingJson("not json at all")).toEqual({});
-		expect(parseStreamingJson("@@@")).toEqual({});
+		const result = parseStreamingJson<Record<string, unknown>>("not json at all");
+		expect(result).toBeInstanceOf(Object);
+		expect(Array.isArray(result)).toBe(false);
+		expect(result).toEqual({});
+		const result2 = parseStreamingJson<Record<string, unknown>>("@@@");
+		expect(result2).toBeInstanceOf(Object);
+		expect(Array.isArray(result2)).toBe(false);
+		expect(result2).toEqual({});
 	});
 });

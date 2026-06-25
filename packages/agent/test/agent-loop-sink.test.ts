@@ -276,7 +276,7 @@ describe("runAgentLoopContinue with AgentEventSink", () => {
 		}
 	});
 
-	it("returns an empty new-messages array and emits agent_end when the model aborts immediately", async () => {
+	it("returns the error assistant message in new-messages and emits agent_end when the model aborts immediately", async () => {
 		const userMessage: AgentMessage = createUserMessage("Hello");
 		const context: AgentContext = { systemPrompt: "", messages: [userMessage], tools: [] };
 		const config: AgentLoopConfig = { model: createModel(), convertToLlm: identityConverter };

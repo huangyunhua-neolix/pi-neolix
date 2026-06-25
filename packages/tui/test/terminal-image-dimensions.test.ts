@@ -261,7 +261,11 @@ describe("allocateImageId", () => {
 	});
 
 	it("returns potentially different ids across calls (random)", () => {
-		// Probabilistic but practically always different with a 32-bit range.
+		// Probabilistic: allocateImageId draws from a 32-bit range. With only 50
+		// draws, a birthday-paradox collision is astronomically unlikely
+		// (~50² / (2·2³²) ≈ 3e-7) but not strictly impossible. The assertion
+		// only requires at least two distinct ids (`size > 1`), which holds as
+		// long as not every draw coincidentally lands on the same value.
 		const ids = new Set<number>();
 		for (let i = 0; i < 50; i++) {
 			ids.add(allocateImageId());
