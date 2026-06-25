@@ -339,12 +339,12 @@ describe("SettingsList", () => {
 						currentValue: "a",
 						submenu: (_value, done) => {
 							// Keep a reference so done() can be called later by the test.
-							(doneRef as (v?: string) => void) = done;
+							doneRef.current = done;
 							return submenuComponent;
 						},
 					},
 				];
-				let doneRef: ((v?: string) => void) | null = null;
+				const doneRef: { current: ((v?: string) => void) | null } = { current: null };
 				const list = new SettingsList(
 					items,
 					5,
@@ -358,7 +358,7 @@ describe("SettingsList", () => {
 				assert.strictEqual(submenuRendered, true, "submenu component should render");
 				assert.deepStrictEqual(lines, ["submenu-line"]);
 				// Clean up the submenu by calling done() with no value.
-				(doneRef as (v?: string) => void)?.();
+				doneRef.current?.();
 			} finally {
 				tui.stop();
 			}
@@ -369,14 +369,14 @@ describe("SettingsList", () => {
 			const tui = new TUI(terminal);
 			try {
 				const changes: Array<{ id: string; value: string }> = [];
-				let doneRef: ((v?: string) => void) | null = null;
+				const doneRef: { current: ((v?: string) => void) | null } = { current: null };
 				const items: SettingItem[] = [
 					{
 						id: "picker",
 						label: "Picker",
 						currentValue: "a",
 						submenu: (_value, done) => {
-							(doneRef as (v?: string) => void) = done;
+							doneRef.current = done;
 							return {
 								render: () => ["submenu"],
 								invalidate: () => {},
@@ -393,7 +393,7 @@ describe("SettingsList", () => {
 					{},
 				);
 				list.handleInput("\r");
-				(doneRef as (v?: string) => void)?.("b");
+				doneRef.current?.("b");
 				// After done, the list should render again (not the submenu).
 				const joined = list.render(60).join("\n");
 				assert.ok(joined.includes("Picker"), "list should render after submenu closes");

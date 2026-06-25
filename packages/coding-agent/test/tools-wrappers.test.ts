@@ -1,8 +1,10 @@
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import type { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type { ExtensionContext, RegisteredTool, ToolDefinition } from "../src/core/extensions/types.ts";
 import { wrapRegisteredTool, wrapRegisteredTools } from "../src/core/extensions/wrapper.ts";
+import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 /** Minimal faux ExtensionContext — the wrapper only forwards it to definition.execute. */
 function makeFauxContext(): ExtensionContext {
@@ -10,17 +12,15 @@ function makeFauxContext(): ExtensionContext {
 }
 
 /** A faux runner that exposes createContext() and tracks calls via the returned counter. */
-function makeFauxRunner(): { runner: { createContext(): ExtensionContext }; count(): number } {
+function makeFauxRunner(): { runner: ExtensionRunner; count(): number } {
 	let n = 0;
-	return {
-		runner: {
-			createContext(): ExtensionContext {
-				n++;
-				return makeFauxContext();
-			},
+	const runner = {
+		createContext(): ExtensionContext {
+			n++;
+			return makeFauxContext();
 		},
-		count: () => n,
 	};
+	return { runner: runner as unknown as ExtensionRunner, count: () => n };
 }
 
 /** Build a RegisteredTool whose definition.execute records its arguments and returns a known result. */
@@ -49,7 +49,7 @@ function makeRecordingTool(options?: { throws?: Error }): {
 	return {
 		registeredTool: {
 			definition,
-			sourceInfo: { path: "<inline>" },
+			sourceInfo: createSyntheticSourceInfo("<inline>", { source: "test" }),
 		},
 		executeCalls,
 		sourceInfo: { path: "<inline>" },
@@ -107,7 +107,7 @@ describe("wrapRegisteredTool", () => {
 		};
 		const registeredTool: RegisteredTool = {
 			definition,
-			sourceInfo: { path: "<inline>" },
+			sourceInfo: createSyntheticSourceInfo("<inline>", { source: "test" }),
 		};
 		const { runner } = makeFauxRunner();
 		const wrapped = wrapRegisteredTool(registeredTool, runner);

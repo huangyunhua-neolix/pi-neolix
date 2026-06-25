@@ -363,8 +363,8 @@ describe("generateBranchSummary", () => {
 		faux.setResponses([
 			(context) => {
 				const message = context.messages[0];
-				const block = message?.role === "user" ? message.content[0] : null;
-				promptText = block?.type === "text" ? block.text : "";
+				const block = message?.role === "user" ? message.content[0] : undefined;
+				promptText = block !== undefined && typeof block === "object" && block.type === "text" ? block.text : "";
 				return fauxAssistantMessage("## Goal\nok");
 			},
 		]);
@@ -386,8 +386,8 @@ describe("generateBranchSummary", () => {
 		faux.setResponses([
 			(context) => {
 				const message = context.messages[0];
-				const block = message?.role === "user" ? message.content[0] : null;
-				promptText = block?.type === "text" ? block.text : "";
+				const block = message?.role === "user" ? message.content[0] : undefined;
+				promptText = block !== undefined && typeof block === "object" && block.type === "text" ? block.text : "";
 				return fauxAssistantMessage("## Goal\nok");
 			},
 		]);

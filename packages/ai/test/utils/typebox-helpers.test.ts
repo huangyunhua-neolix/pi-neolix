@@ -2,9 +2,19 @@ import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import { StringEnum } from "../../src/utils/typebox-helpers.ts";
 
+type StringEnumSchema = {
+	type: string;
+	enum: string[];
+	description?: string;
+	default?: string;
+};
+
+const schemaOf = (values: readonly string[], options?: { description?: string; default?: string }): StringEnumSchema =>
+	StringEnum(values, options) as unknown as StringEnumSchema;
+
 describe("StringEnum", () => {
 	it("produces a string schema with the provided enum values", () => {
-		const schema = StringEnum(["add", "subtract", "multiply", "divide"]);
+		const schema = schemaOf(["add", "subtract", "multiply", "divide"]);
 
 		expect(schema.type).toBe("string");
 		expect(schema.enum).toEqual(["add", "subtract", "multiply", "divide"]);
@@ -13,7 +23,7 @@ describe("StringEnum", () => {
 	});
 
 	it("accepts optional description and default fields", () => {
-		const schema = StringEnum(["a", "b"], {
+		const schema = schemaOf(["a", "b"], {
 			description: "pick one",
 			default: "a",
 		});
@@ -25,7 +35,7 @@ describe("StringEnum", () => {
 	});
 
 	it("omits description / default when not provided", () => {
-		const schema = StringEnum(["x", "y"]);
+		const schema = schemaOf(["x", "y"]);
 
 		expect("description" in schema).toBe(false);
 		expect("default" in schema).toBe(false);
@@ -33,13 +43,13 @@ describe("StringEnum", () => {
 
 	it("accepts values provided as a readonly tuple", () => {
 		const values = ["red", "green", "blue"] as const;
-		const schema = StringEnum(values);
+		const schema = schemaOf(values);
 
 		expect(schema.enum).toEqual(["red", "green", "blue"]);
 	});
 
 	it("accepts a single-value enum", () => {
-		const schema = StringEnum(["only"]);
+		const schema = schemaOf(["only"]);
 
 		expect(schema.enum).toEqual(["only"]);
 		expect(Value.Check(schema, "only")).toBe(true);
@@ -47,7 +57,7 @@ describe("StringEnum", () => {
 	});
 
 	it("validates enum members and rejects non-members (happy path + error path)", () => {
-		const schema = StringEnum(["add", "subtract", "multiply", "divide"], {
+		const schema = schemaOf(["add", "subtract", "multiply", "divide"], {
 			description: "The operation to perform",
 			default: "add",
 		});

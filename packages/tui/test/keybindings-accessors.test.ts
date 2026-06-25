@@ -35,7 +35,7 @@ describe("getKeybindings / setKeybindings", () => {
 			try {
 				setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 				const kb = getKeybindings();
-				for (const id of Object.keys(TUI_KEYBINDINGS) as Keybinding[]) {
+				for (const id of Object.keys(TUI_KEYBINDINGS) as (keyof typeof TUI_KEYBINDINGS)[]) {
 					const def = TUI_KEYBINDINGS[id];
 					const expected = Array.isArray(def.defaultKeys) ? [...def.defaultKeys] : [def.defaultKeys];
 					assert.deepStrictEqual(kb.getKeys(id), expected, `default keys for ${id} should match config`);
