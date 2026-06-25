@@ -375,8 +375,25 @@ describe("generateBranchSummary", () => {
 			customInstructions: "focus on tests",
 		};
 		getOrThrow(await generateBranchSummary([user1], options));
+		// Verify the prompt structure: conversation is wrapped in tags, then the
+		// default prompt runs, then the custom focus is appended.
+		expect(promptText.startsWith("<conversation>\n")).toBe(true);
+		expect(promptText).toContain("</conversation>");
+		const openIdx = promptText.indexOf("<conversation>");
+		const closeIdx = promptText.indexOf("</conversation>");
+		expect(closeIdx).toBeGreaterThan(openIdx);
+		// The conversation payload is non-empty and sits between the tags.
+		const conversationBody = promptText.slice(openIdx + "<conversation>\n".length, closeIdx);
+		expect(conversationBody.length).toBeGreaterThan(0);
+		expect(conversationBody).toContain("summarize this");
+		// Default prompt body is retained ahead of the custom focus.
+		expect(promptText).toContain("Create a structured summary of this conversation branch");
+		expect(promptText).toContain("## Goal");
 		expect(promptText).toContain("Additional focus: focus on tests");
-		expect(promptText).toContain("<conversation>");
+		// The custom focus trails the default prompt, not the reverse.
+		expect(promptText.indexOf("Create a structured summary")).toBeLessThan(
+			promptText.indexOf("Additional focus: focus on tests"),
+		);
 	});
 
 	it("replaces the default prompt with custom instructions when replaceInstructions is true", async () => {
@@ -399,7 +416,15 @@ describe("generateBranchSummary", () => {
 			replaceInstructions: true,
 		};
 		getOrThrow(await generateBranchSummary([user1], options));
+		// Conversation wrapping is preserved even when instructions are replaced.
+		expect(promptText.startsWith("<conversation>\n")).toBe(true);
+		const closeIdx = promptText.indexOf("</conversation>");
+		expect(closeIdx).toBeGreaterThan(promptText.indexOf("<conversation>"));
+		// Custom instructions are present and the default prompt body is absent.
 		expect(promptText).toContain("custom-only prompt");
+		expect(promptText).not.toContain("Create a structured summary of this conversation branch");
 		expect(promptText).not.toContain("Additional focus:");
+		// Custom instructions appear after the closing conversation tag, not inside it.
+		expect(promptText.indexOf("custom-only prompt")).toBeGreaterThan(closeIdx);
 	});
 });

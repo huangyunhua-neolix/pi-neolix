@@ -245,6 +245,28 @@ describe("streamProxy", () => {
 		expect(result.errorMessage).toContain("Internal Server Error");
 	});
 
+	it("emits an error event when fetch throws during the initial request (network failure)", async () => {
+		// fetch() itself rejects before any response is received — e.g. DNS failure,
+		// connection refused, CORS rejection, or a thrown TypeError from fetch().
+		const networkError = new TypeError("Network connection failed");
+		installFetch(() => Promise.reject(networkError));
+
+		const stream = streamProxy(createModel(), createContext(), {
+			proxyUrl: PROXY_URL,
+			authToken: AUTH_TOKEN,
+		});
+		const { events, result } = await collectStreamEvents(stream);
+
+		// The thrown fetch error surfaces as a single error event; no SSE events
+		// are emitted because the response body stream never started.
+		expect(events.map((e) => e.type)).toEqual(["error"]);
+		expect(result.stopReason).toBe("error");
+		expect(typeof result.errorMessage).toBe("string");
+		// The original error message is forwarded onto the partial message so
+		// callers can distinguish network failures from upstream error bodies.
+		expect(result.errorMessage).toContain("Network connection failed");
+	});
+
 	it("emits an aborted error event when the signal is already aborted", async () => {
 		installFetch(() =>
 			Promise.resolve(createMockResponse(encodeChunks([{ type: "done", reason: "stop", usage: createUsage() }]))),

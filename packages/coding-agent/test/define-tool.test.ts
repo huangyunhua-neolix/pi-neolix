@@ -101,10 +101,23 @@ describe("defineTool", () => {
 			// execute intentionally omitted
 		} as unknown as ToolDefinition;
 
+		// Regression guard: if runtime validation is ever added (e.g. a guard that
+		// throws when execute is missing, or a proxy that injects a safe wrapper),
+		// this call would throw or mutate — failing one of the assertions below.
+		expect(() => defineTool(malformed)).not.toThrow();
 		const defined = defineTool(malformed);
+
+		// Identity cast: same reference, no clone, no proxy.
 		expect(defined).toBe(malformed as unknown as object);
+		// No properties added, removed, or rewritten by the helper.
+		expect(Object.keys(defined).sort()).toEqual(Object.keys(malformed as unknown as object).sort());
 		expect(defined.name).toBe("bad");
-		// No execute was added and no error was thrown.
+		// No synthetic execute was injected — the missing field stays missing,
+		// proving the helper does not wrap or default the contract.
 		expect((defined as { execute?: unknown }).execute).toBeUndefined();
+		// Calling the missing execute throws TypeError at the call site (not a
+		// validation error from defineTool), proving no runtime gate was inserted
+		// and no synthetic wrapper was substituted for the missing function.
+		expect(() => (defined as unknown as { execute: () => void }).execute()).toThrow(TypeError);
 	});
 });

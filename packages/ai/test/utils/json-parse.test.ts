@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseJsonWithRepair, parseStreamingJson, repairJson } from "../../src/utils/json-parse.ts";
 
 describe("repairJson", () => {
@@ -157,5 +157,24 @@ describe("parseStreamingJson", () => {
 		expect(result2).toBeInstanceOf(Object);
 		expect(Array.isArray(result2)).toBe(false);
 		expect(result2).toEqual({});
+	});
+
+	it("exercises the error-handling branch: parse is attempted and swallowed, not short-circuited", () => {
+		// Prove the input genuinely fails strict parsing — so reaching {} requires
+		// the catch chain to run, not an early empty-input return.
+		expect(() => parseJsonWithRepair("not json at all")).toThrow(SyntaxError);
+		expect(() => parseJsonWithRepair("@@@")).toThrow(SyntaxError);
+
+		// Spy on JSON.parse to confirm parseStreamingJson actually invokes it
+		// (i.e. the function attempts a real parse before degrading to {}).
+		const parseSpy = vi.spyOn(JSON, "parse");
+		try {
+			expect(() => parseStreamingJson("not json at all")).not.toThrow();
+			expect(parseSpy).toHaveBeenCalled();
+			const result = parseStreamingJson<Record<string, unknown>>("not json at all");
+			expect(result).toEqual({});
+		} finally {
+			parseSpy.mockRestore();
+		}
 	});
 });
