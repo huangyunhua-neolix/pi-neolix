@@ -90,8 +90,11 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import { type AgentConfig, discoverAgents } from "./tools/agent-discovery.ts";
+import { makeGeneralPurposeAgent, runOneAgentSpawn } from "./tools/agent-tool.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
-import { createAllToolDefinitions } from "./tools/index.ts";
+import { AGENT_TOOL_NAME, createAllToolDefinitions } from "./tools/index.ts";
+import type { SpawnSkillFn } from "./tools/skill-tool.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
 // ============================================================================
@@ -330,6 +333,51 @@ export class AgentSession {
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	/**
+	 * Cached result of discoverAgents(this._cwd, "both"). Computed on first
+	 * _rebuildSystemPrompt call when the Agent tool is active, invalidated
+	 * whenever the active tool set changes (setActiveToolsByName) so a
+	 * reload that adds/removes tools re-discovers.
+	 */
+	private _availableAgentsCache: AgentConfig[] | undefined = undefined;
+
+	/**
+	 * Bound spawnSkill callback for the Skill tool. Spawns a child `pi`
+	 * process with the skill body as `--append-system-prompt`, drains stdout
+	 * via the agent-tool spawn loop, and returns the final assistant text.
+	 *
+	 * R2-14: now passes `signal` and `onAskUserQuestion` from the
+	 * SkillSpawnOptions through to runOneAgentSpawn. Without these, a skill
+	 * calling AskUserQuestion would deadlock (no handler, child waits on
+	 * stdin, parent waits on spawn promise, no AbortSignal).
+	 */
+	private _spawnSkill: SpawnSkillFn = async (opts) => {
+		const agent = makeGeneralPurposeAgent(this.getActiveToolNames());
+		agent.systemPrompt = opts.skillContent;
+		const result = await runOneAgentSpawn({
+			agent,
+			task: opts.args ?? "",
+			cwd: opts.cwd,
+			allRegisteredToolNames: this.getActiveToolNames(),
+			signal: opts.signal,
+			onAskUserQuestion: opts.onAskUserQuestion,
+		});
+		let text = "";
+		for (const msg of result.messages) {
+			if (msg.role !== "assistant") continue;
+			const content = msg.content as unknown;
+			if (!Array.isArray(content)) continue;
+			for (const part of content) {
+				if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+					text += part.text;
+				}
+			}
+		}
+		return {
+			content: [{ type: "text", text: text || "(no output)" }],
+			details: { mode: "spawn", skillName: opts.skillName, exitCode: result.exitCode },
+		};
+	};
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -829,6 +877,10 @@ export class AgentSession {
 		}
 		this.agent.state.tools = tools;
 
+		// Invalidate the available-agents cache so a tool registry change
+		// (reload, /agent activate) re-discovers on the next prompt rebuild.
+		this._availableAgentsCache = undefined;
+
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
 		this.agent.state.systemPrompt = this._baseSystemPrompt;
@@ -935,6 +987,23 @@ export class AgentSession {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
+		// When the Agent tool is active, discover available agents and pass
+		// them to the system prompt builder so it can render the
+		// <available_agents> section. The discovery result is cached on
+		// first computation and invalidated when the tool registry changes
+		// (setActiveToolsByName) so repeated turns don't re-scan the disk.
+		let availableAgents: AgentConfig[] | undefined;
+		if (validToolNames.includes(AGENT_TOOL_NAME)) {
+			if (!this._availableAgentsCache) {
+				try {
+					this._availableAgentsCache = discoverAgents(this._cwd, "both").agents;
+				} catch {
+					this._availableAgentsCache = [];
+				}
+			}
+			availableAgents = this._availableAgentsCache;
+		}
+
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: loadedSkills,
@@ -944,6 +1013,7 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			availableAgents,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -2424,6 +2494,12 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		// SkillTool needs the loaded skills (for lookup) and a spawnSkill
+		// callback (for large / tools-declaring skills). We source skills from
+		// the resource loader and wire spawnSkill to a minimal pi-spawn helper
+		// that reuses the agent-tool spawn infrastructure. When V2 is off, the
+		// Skill tool is not registered and these options are ignored.
+		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const baseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -2434,6 +2510,7 @@ export class AgentSession {
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					skill: { skills: loadedSkills, spawnSkill: this._spawnSkill },
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -2460,6 +2537,13 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
+		// When PI_AGENT_RUNTIME_V2=1, createAllToolDefinitions includes the 5 V2
+		// tools (Agent, Skill, AskUserQuestion, WebFetch, WebSearch), so the
+		// _baseToolDefinitions map picks them up automatically here. The default
+		// active set stays ["read","bash","edit","write"] to match sdk.ts — V2
+		// tools are only activated when an agent frontmatter or the caller
+		// explicitly opts in (spec §4.1.3: wildcard spawn does not depend on
+		// this default, but the two hardcoded lists must stay in sync).
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
 			: ["read", "bash", "edit", "write"];

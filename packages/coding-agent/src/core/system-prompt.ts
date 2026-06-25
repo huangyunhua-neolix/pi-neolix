@@ -4,6 +4,7 @@
 
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
+import type { AgentConfig } from "./tools/agent-discovery.ts";
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -22,6 +23,8 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Discovered agents, listed when the Agent tool is active (V2 only). */
+	availableAgents?: AgentConfig[];
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -35,6 +38,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		availableAgents,
 	} = options;
 	const resolvedCwd = cwd;
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -49,6 +53,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+
+	const tools = selectedTools || ["read", "bash", "edit", "write"];
+	const agentActive = tools.includes("Agent");
+	const availableAgentsSection =
+		agentActive && availableAgents && availableAgents.length > 0 ? formatAvailableAgents(availableAgents) : "";
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -73,6 +82,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
+		if (availableAgentsSection) {
+			prompt += availableAgentsSection;
+		}
+
 		// Add date and working directory last
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
@@ -87,7 +100,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	// Build tools list based on selected tools.
 	// A tool appears in Available tools only when the caller provides a one-line snippet.
-	const tools = selectedTools || ["read", "bash", "edit", "write"];
 	const visibleTools = tools.filter((name) => !!toolSnippets?.[name]);
 	const toolsList =
 		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
@@ -165,9 +177,22 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += formatSkillsForPrompt(skills);
 	}
 
+	if (availableAgentsSection) {
+		prompt += availableAgentsSection;
+	}
+
 	// Add date and working directory last
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 
 	return prompt;
+}
+
+/**
+ * Format the `<available_agents>` section listing discovered agents by name
+ * and description. Only included when the Agent tool is active (V2).
+ */
+function formatAvailableAgents(agents: AgentConfig[]): string {
+	const lines = agents.map((a) => `- ${a.name}: ${a.description}`);
+	return `\n\n<available_agents>\n${lines.join("\n")}\n</available_agents>\n`;
 }

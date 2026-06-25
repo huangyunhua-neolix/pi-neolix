@@ -1,4 +1,15 @@
 export {
+	AGENT_TOOL_NAME,
+	type AgentToolDefinitionOptions,
+	createAgentTool,
+	createAgentToolDefinition,
+} from "./agent-tool.ts";
+export {
+	ASK_USER_QUESTION_TOOL_NAME,
+	createAskUserQuestionTool,
+	createAskUserQuestionToolDefinition,
+} from "./ask-user-question.ts";
+export {
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -51,6 +62,12 @@ export {
 	type ReadToolOptions,
 } from "./read.ts";
 export {
+	createSkillTool,
+	createSkillToolDefinition,
+	SKILL_TOOL_NAME,
+	type SkillToolOptions,
+} from "./skill-tool.ts";
+export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
@@ -61,6 +78,16 @@ export {
 	truncateTail,
 } from "./truncate.ts";
 export {
+	createWebFetchTool,
+	createWebFetchToolDefinition,
+	WEB_FETCH_TOOL_NAME,
+} from "./web-fetch.ts";
+export {
+	createWebSearchTool,
+	createWebSearchToolDefinition,
+	WEB_SEARCH_TOOL_NAME,
+} from "./web-search.ts";
+export {
 	createWriteTool,
 	createWriteToolDefinition,
 	type WriteOperations,
@@ -68,20 +95,53 @@ export {
 	type WriteToolOptions,
 } from "./write.ts";
 
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
+import type { Skill } from "../skills.ts";
+import { createAgentTool, createAgentToolDefinition } from "./agent-tool.ts";
+import { createAskUserQuestionTool, createAskUserQuestionToolDefinition } from "./ask-user-question.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import { createSkillTool, createSkillToolDefinition, type SkillToolOptions } from "./skill-tool.ts";
+import { createWebFetchTool, createWebFetchToolDefinition } from "./web-fetch.ts";
+import { createWebSearchTool, createWebSearchToolDefinition } from "./web-search.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
+
+const V2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
-export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+export type ToolName =
+	| "read"
+	| "bash"
+	| "edit"
+	| "write"
+	| "grep"
+	| "find"
+	| "ls"
+	| "Agent"
+	| "Skill"
+	| "AskUserQuestion"
+	| "WebFetch"
+	| "WebSearch";
+
+const V2_TOOL_NAMES: ToolName[] = ["Agent", "Skill", "AskUserQuestion", "WebFetch", "WebSearch"];
+
+export const allToolNames: Set<ToolName> = new Set<ToolName>([
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+	...(V2 ? V2_TOOL_NAMES : []),
+]);
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;
@@ -91,6 +151,8 @@ export interface ToolsOptions {
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
+	skill?: SkillToolOptions & { skills?: Skill[] };
+	agent?: { spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess };
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
@@ -109,6 +171,16 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createFindToolDefinition(cwd, options?.find);
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
+		case "Agent":
+			return createAgentToolDefinition(cwd, options?.agent);
+		case "Skill":
+			return createSkillToolDefinition(cwd, options?.skill?.skills ?? [], options?.skill);
+		case "AskUserQuestion":
+			return createAskUserQuestionToolDefinition(cwd);
+		case "WebFetch":
+			return createWebFetchToolDefinition(cwd);
+		case "WebSearch":
+			return createWebSearchToolDefinition(cwd);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -130,6 +202,16 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createFindTool(cwd, options?.find);
 		case "ls":
 			return createLsTool(cwd, options?.ls);
+		case "Agent":
+			return createAgentTool(cwd, options?.agent);
+		case "Skill":
+			return createSkillTool(cwd, options?.skill?.skills ?? [], options?.skill);
+		case "AskUserQuestion":
+			return createAskUserQuestionTool(cwd);
+		case "WebFetch":
+			return createWebFetchTool(cwd);
+		case "WebSearch":
+			return createWebSearchTool(cwd);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -154,7 +236,7 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
-	return {
+	const base: Record<string, ToolDef> = {
 		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		edit: createEditToolDefinition(cwd, options?.edit),
@@ -163,6 +245,14 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
 	};
+	if (V2) {
+		base.Agent = createAgentToolDefinition(cwd, options?.agent);
+		base.Skill = createSkillToolDefinition(cwd, options?.skill?.skills ?? [], options?.skill);
+		base.AskUserQuestion = createAskUserQuestionToolDefinition(cwd);
+		base.WebFetch = createWebFetchToolDefinition(cwd);
+		base.WebSearch = createWebSearchToolDefinition(cwd);
+	}
+	return base as Record<ToolName, ToolDef>;
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
@@ -184,7 +274,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 }
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
-	return {
+	const base: Record<string, Tool> = {
 		read: createReadTool(cwd, options?.read),
 		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd, options?.edit),
@@ -193,4 +283,12 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),
 	};
+	if (V2) {
+		base.Agent = createAgentTool(cwd, options?.agent);
+		base.Skill = createSkillTool(cwd, options?.skill?.skills ?? [], options?.skill);
+		base.AskUserQuestion = createAskUserQuestionTool(cwd);
+		base.WebFetch = createWebFetchTool(cwd);
+		base.WebSearch = createWebSearchTool(cwd);
+	}
+	return base as Record<ToolName, Tool>;
 }

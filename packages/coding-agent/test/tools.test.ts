@@ -4,16 +4,20 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
+import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
 import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
+	allToolNames,
+	createAllToolDefinitions,
 	createEditTool,
 	createFindTool,
 	createGrepTool,
 	createLsTool,
 	createReadTool,
 	createWriteTool,
-} from "../src/index.ts";
+	type ToolName,
+} from "../src/core/tools/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
 const readTool = createReadTool(process.cwd());
@@ -1175,5 +1179,130 @@ describe("edit tool CRLF handling", () => {
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("\uFEFFfirst\r\nSECOND\r\nthird\r\nFOURTH\r\n");
+	});
+});
+
+describe("tool registry V2 flag (PI_AGENT_RUNTIME_V2)", () => {
+	const V2_TOOL_NAMES = ["Agent", "Skill", "AskUserQuestion", "WebFetch", "WebSearch"] as const;
+	const BASE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+	it("exposes the expected tool set based on PI_AGENT_RUNTIME_V2 at module load", () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+
+		if (v2) {
+			expect(allToolNames.size).toBe(12);
+			for (const name of V2_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(true);
+			}
+			for (const name of BASE_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(true);
+			}
+
+			const defs = createAllToolDefinitions(process.cwd());
+			const keys = Object.keys(defs);
+			expect(keys.length).toBe(12);
+			for (const name of V2_TOOL_NAMES) {
+				expect(keys).toContain(name);
+			}
+		} else {
+			expect(allToolNames.size).toBe(7);
+			for (const name of V2_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(false);
+			}
+			for (const name of BASE_TOOL_NAMES) {
+				expect(allToolNames.has(name as ToolName)).toBe(true);
+			}
+
+			const defs = createAllToolDefinitions(process.cwd());
+			const keys = Object.keys(defs);
+			expect(keys.length).toBe(7);
+			for (const name of V2_TOOL_NAMES) {
+				expect(keys).not.toContain(name);
+			}
+		}
+	});
+
+	it("SkillTool receives loaded skills via createAllToolDefinitions options (Y1)", () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+		if (!v2) return; // only meaningful when V2 is on
+
+		const skill = { name: "my-skill", filePath: "/tmp/x.md", baseDir: "/tmp" } as any;
+		const defs = createAllToolDefinitions(process.cwd(), {
+			skill: { skills: [skill] },
+		});
+		// The definition is constructed; the skills array is consumed at execute
+		// time. We verify the definition exists and the tool name is Skill.
+		expect(defs.Skill).toBeDefined();
+		expect(defs.Skill.name).toBe("Skill");
+	});
+
+	it("SkillTool spawnSkill is wired via createAllToolDefinitions options (Y1)", async () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+		if (!v2) return;
+
+		const spawnSkill = vi.fn().mockResolvedValue({
+			content: [{ type: "text", text: "spawned" }],
+		});
+		const defs = createAllToolDefinitions(process.cwd(), {
+			skill: { skills: [], spawnSkill: spawnSkill as any },
+		});
+		// Verify the definition was created without error (spawnSkill stored internally)
+		expect(defs.Skill).toBeDefined();
+	});
+});
+
+describe("system prompt available_agents section (R2)", () => {
+	it("renders <available_agents> when Agent tool is active and agents provided", () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+		if (!v2) return;
+
+		const prompt = buildSystemPrompt({
+			cwd: "/tmp",
+			selectedTools: ["read", "bash", "edit", "write", "Agent"],
+			availableAgents: [
+				{
+					name: "code-reviewer",
+					description: "Reviews code for quality",
+					systemPrompt: "",
+					source: "user",
+					filePath: "/tmp/reviewer.md",
+				},
+			],
+		});
+		expect(prompt).toContain("<available_agents>");
+		expect(prompt).toContain("code-reviewer");
+		expect(prompt).toContain("Reviews code for quality");
+	});
+
+	it("omits <available_agents> when Agent tool is not active", () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+		if (!v2) return;
+
+		const prompt = buildSystemPrompt({
+			cwd: "/tmp",
+			selectedTools: ["read", "bash", "edit", "write"],
+			availableAgents: [
+				{
+					name: "code-reviewer",
+					description: "Reviews code for quality",
+					systemPrompt: "",
+					source: "user",
+					filePath: "/tmp/reviewer.md",
+				},
+			],
+		});
+		expect(prompt).not.toContain("<available_agents>");
+	});
+
+	it("omits <available_agents> when availableAgents is undefined (R2 regression guard)", () => {
+		const v2 = process.env.PI_AGENT_RUNTIME_V2 === "1";
+		if (!v2) return;
+
+		const prompt = buildSystemPrompt({
+			cwd: "/tmp",
+			selectedTools: ["read", "bash", "edit", "write", "Agent"],
+			// availableAgents deliberately omitted
+		});
+		expect(prompt).not.toContain("<available_agents>");
 	});
 });
