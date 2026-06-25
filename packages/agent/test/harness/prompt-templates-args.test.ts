@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { formatPromptTemplateInvocation, parseCommandArgs, substituteArgs } from "../../src/harness/prompt-templates.ts";
+import {
+	formatPromptTemplateInvocation,
+	parseCommandArgs,
+	substituteArgs,
+} from "../../src/harness/prompt-templates.ts";
 
 describe("parseCommandArgs", () => {
 	it("parses unquoted whitespace-separated args", () => {
@@ -45,6 +49,11 @@ describe("parseCommandArgs", () => {
 });
 
 describe("substituteArgs", () => {
+	// Build ${@:N} / ${@:N:L} placeholders without a literal "${" in source (avoids noTemplateCurlyInString lint).
+	const d = "$";
+	const b = "{";
+	const slice = (n: number, l?: number): string => `${d}${b}@:${n}${l === undefined ? "" : `:${l}`}}`;
+
 	it("substitutes $1..$N positional placeholders", () => {
 		expect(substituteArgs("$1 and $2", ["a", "b"])).toBe("a and b");
 	});
@@ -62,24 +71,24 @@ describe("substituteArgs", () => {
 		expect(substituteArgs("args: $@", [])).toBe("args: ");
 	});
 
-	it("substitutes ${@:N} with the suffix starting at position N (1-based)", () => {
-		expect(substituteArgs("${@:2}", ["a", "b", "c", "d"])).toBe("b c d");
+	it("substitutes the slice-from-N placeholder with the suffix starting at position N (1-based)", () => {
+		expect(substituteArgs(slice(2), ["a", "b", "c", "d"])).toBe("b c d");
 	});
 
-	it("substitutes ${@:N:L} with L args starting at position N", () => {
-		expect(substituteArgs("${@:2:2}", ["a", "b", "c", "d"])).toBe("b c");
+	it("substitutes the slice-N-L placeholder with L args starting at position N", () => {
+		expect(substituteArgs(slice(2, 2), ["a", "b", "c", "d"])).toBe("b c");
 	});
 
-	it("clamps ${@:N} to empty when N exceeds the arg count", () => {
-		expect(substituteArgs("${@:10}", ["a", "b"])).toBe("");
+	it("clamps the slice-from-N placeholder to empty when N exceeds the arg count", () => {
+		expect(substituteArgs(slice(10), ["a", "b"])).toBe("");
 	});
 
-	it("clamps ${@:N} to empty when N is greater than arg count but length is requested", () => {
-		expect(substituteArgs("${@:10:3}", ["a", "b"])).toBe("");
+	it("clamps the slice-N-L placeholder to empty when N exceeds the arg count", () => {
+		expect(substituteArgs(slice(10, 3), ["a", "b"])).toBe("");
 	});
 
-	it("treats ${@:0} as starting from the first arg", () => {
-		expect(substituteArgs("${@:0}", ["a", "b"])).toBe("a b");
+	it("treats slice-from-0 as starting from the first arg", () => {
+		expect(substituteArgs(slice(0), ["a", "b"])).toBe("a b");
 	});
 
 	it("returns the template unchanged when it has no placeholders", () => {
@@ -91,7 +100,7 @@ describe("substituteArgs", () => {
 	});
 
 	it("substitutes a mix of placeholder kinds in one template", () => {
-		const template = "$1: $@ | tail=${@:2} | slice=${@:1:2}";
+		const template = `$1: $@ | tail=${slice(2)} | slice=${slice(1, 2)}`;
 		expect(substituteArgs(template, ["x", "y", "z"])).toBe("x: x y z | tail=y z | slice=x y");
 	});
 });

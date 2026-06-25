@@ -4,11 +4,6 @@ import type {
 	BashToolResultEvent,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
-	EditToolResultEvent,
-	FindToolResultEvent,
-	GrepToolResultEvent,
-	LsToolResultEvent,
-	ReadToolResultEvent,
 	ToolCallEvent,
 	ToolResultEvent,
 	WriteToolResultEvent,
@@ -90,7 +85,7 @@ describe("is*ToolResult type guards", () => {
 			{ guard: isFindToolResult, toolName: "find" },
 			{ guard: isLsToolResult, toolName: "ls" },
 		];
-		for (const { guard, toolName } of all) {
+		for (const { toolName } of all) {
 			const e = makeResult(toolName, undefined);
 			const matched = all.filter(({ guard: g }) => g(e));
 			expect(matched).toHaveLength(1);

@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { wrapRegisteredTool, wrapRegisteredTools } from "../src/core/extensions/wrapper.ts";
+import { describe, expect, it } from "vitest";
 import type { ExtensionContext, RegisteredTool, ToolDefinition } from "../src/core/extensions/types.ts";
+import { wrapRegisteredTool, wrapRegisteredTools } from "../src/core/extensions/wrapper.ts";
 
 /** Minimal faux ExtensionContext — the wrapper only forwards it to definition.execute. */
 function makeFauxContext(): ExtensionContext {

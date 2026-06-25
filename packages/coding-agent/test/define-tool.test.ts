@@ -1,5 +1,5 @@
+import { type Static, Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { Type, type Static } from "typebox";
 import { defineTool, type ToolDefinition } from "../src/core/extensions/types.ts";
 
 /** A minimal valid ToolDefinition for a toy echo tool. */

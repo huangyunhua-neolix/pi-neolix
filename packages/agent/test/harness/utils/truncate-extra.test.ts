@@ -50,7 +50,7 @@ describe("truncateLine", () => {
 		const line = "a".repeat(501);
 		const result = truncateLine(line);
 		expect(result.wasTruncated).toBe(true);
-		expect(result.text).toBe("a".repeat(500) + "... [truncated]");
+		expect(result.text).toBe(`${"a".repeat(500)}... [truncated]`);
 	});
 
 	it("respects a custom max chars argument", () => {
@@ -83,7 +83,7 @@ describe("truncateLine", () => {
 		const line = "中".repeat(600);
 		const result = truncateLine(line);
 		expect(result.wasTruncated).toBe(true);
-		expect(result.text).toBe("中".repeat(500) + "... [truncated]");
+		expect(result.text).toBe(`${"中".repeat(500)}... [truncated]`);
 	});
 
 	it("handles a huge line without crashing", () => {

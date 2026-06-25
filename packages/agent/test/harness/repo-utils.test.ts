@@ -162,7 +162,7 @@ describe("getEntriesToFork", () => {
 	it("throws invalid_fork_target when the target is not a user message (position=before)", async () => {
 		const repo = new InMemorySessionRepo();
 		const session = await repo.create({ id: "s5" });
-		const user1 = await session.appendMessage(createUserMessage("one"));
+		const _user1 = await session.appendMessage(createUserMessage("one"));
 		const assistant1 = await session.appendMessage(createAssistantMessage("two"));
 		const storage = session.getStorage();
 		await expect(getEntriesToFork(storage, { entryId: assistant1 })).rejects.toMatchObject({

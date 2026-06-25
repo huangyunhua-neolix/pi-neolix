@@ -1,4 +1,4 @@
-import { type AssistantMessage, type AssistantMessageEvent, type Context, type Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ProxyAssistantMessageEvent, streamProxy } from "../src/proxy.ts";
 
@@ -40,7 +40,7 @@ function createUsage(): AssistantMessage["usage"] {
 }
 
 function encodeChunks(events: ProxyAssistantMessageEvent[]): Uint8Array {
-	const sse = events.map((event) => `data: ${JSON.stringify(event)}`).join("\n") + "\n";
+	const sse = `${events.map((event) => `data: ${JSON.stringify(event)}`).join("\n")}\n`;
 	return new TextEncoder().encode(sse);
 }
 
@@ -228,7 +228,9 @@ describe("streamProxy", () => {
 	});
 
 	it("emits an aborted error event when the signal is already aborted", async () => {
-		installFetch(() => Promise.resolve(createMockResponse(encodeChunks([{ type: "done", reason: "stop", usage: createUsage() }]))));
+		installFetch(() =>
+			Promise.resolve(createMockResponse(encodeChunks([{ type: "done", reason: "stop", usage: createUsage() }]))),
+		);
 
 		const controller = new AbortController();
 		controller.abort();
@@ -282,8 +284,18 @@ describe("streamProxy", () => {
 			{ type: "done", reason: "stop", usage: createUsage() },
 		];
 		const encoder = new TextEncoder();
-		const chunk1 = encoder.encode(proxyEvents.slice(0, 3).map((e) => `data: ${JSON.stringify(e)}`).join("\n") + "\n");
-		const chunk2 = encoder.encode(proxyEvents.slice(3).map((e) => `data: ${JSON.stringify(e)}`).join("\n") + "\n");
+		const chunk1 = encoder.encode(
+			`${proxyEvents
+				.slice(0, 3)
+				.map((e) => `data: ${JSON.stringify(e)}`)
+				.join("\n")}\n`,
+		);
+		const chunk2 = encoder.encode(
+			`${proxyEvents
+				.slice(3)
+				.map((e) => `data: ${JSON.stringify(e)}`)
+				.join("\n")}\n`,
+		);
 		const response: Response = {
 			ok: true,
 			status: 200,

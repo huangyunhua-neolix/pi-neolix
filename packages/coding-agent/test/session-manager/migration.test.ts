@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	CURRENT_SESSION_VERSION,
-	type FileEntry,
-	migrateSessionEntries,
-} from "../../src/core/session-manager.ts";
+import { CURRENT_SESSION_VERSION, type FileEntry, migrateSessionEntries } from "../../src/core/session-manager.ts";
 
 describe("migrateSessionEntries", () => {
 	it("should add id/parentId to v1 entries", () => {
@@ -106,7 +102,13 @@ describe("migrateSessionEntries", () => {
 
 	it("is a no-op on entries already at the current version", () => {
 		const entries: FileEntry[] = [
-			{ type: "session", id: "sess-1", version: CURRENT_SESSION_VERSION, timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp" },
+			{
+				type: "session",
+				id: "sess-1",
+				version: CURRENT_SESSION_VERSION,
+				timestamp: "2025-01-01T00:00:00Z",
+				cwd: "/tmp",
+			},
 			{
 				type: "message",
 				id: "fixed-id1",

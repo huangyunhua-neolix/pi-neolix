@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	parseJsonWithRepair,
-	parseStreamingJson,
-	repairJson,
-} from "../../src/utils/json-parse.ts";
+import { parseJsonWithRepair, parseStreamingJson, repairJson } from "../../src/utils/json-parse.ts";
 
 describe("repairJson", () => {
 	it("leaves already-valid JSON unchanged when no string-literal repair is needed", () => {
@@ -74,7 +70,7 @@ describe("repairJson", () => {
 describe("parseJsonWithRepair", () => {
 	it("returns parsed value for already-valid JSON", () => {
 		expect(parseJsonWithRepair('{"a":1}')).toEqual({ a: 1 });
-		expect(parseJsonWithRepair('[1,2,3]')).toEqual([1, 2, 3]);
+		expect(parseJsonWithRepair("[1,2,3]")).toEqual([1, 2, 3]);
 		expect(parseJsonWithRepair('"plain"')).toBe("plain");
 		expect(parseJsonWithRepair("42")).toBe(42);
 		expect(parseJsonWithRepair("true")).toBe(true);

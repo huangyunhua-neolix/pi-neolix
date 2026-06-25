@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateDiffString, generateUnifiedPatch, type EditDiffResult } from "../src/core/tools/edit-diff.ts";
+import { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "../src/core/tools/edit-diff.ts";
 
 describe("generateUnifiedPatch", () => {
 	it("produces a standard unified diff header for two distinct contents", () => {
@@ -44,7 +44,7 @@ describe("generateUnifiedPatch", () => {
 	});
 
 	it("respects contextLines option (smaller context)", () => {
-		const oldContent = Array.from({ length: 20 }, (_, i) => `line${i}`).join("\n") + "\n";
+		const oldContent = `${Array.from({ length: 20 }, (_, i) => `line${i}`).join("\n")}\n`;
 		const newContent = oldContent.replace("line10", "CHANGED");
 		const small = generateUnifiedPatch("f.txt", oldContent, newContent, 1);
 		const large = generateUnifiedPatch("f.txt", oldContent, newContent, 4);
@@ -98,7 +98,7 @@ describe("generateDiffString", () => {
 		const newLines = oldLines.slice();
 		newLines[2] = "CHANGED-2";
 		newLines[25] = "CHANGED-25";
-		const result = generateDiffString(oldLines.join("\n") + "\n", newLines.join("\n") + "\n");
+		const result = generateDiffString(`${oldLines.join("\n")}\n`, `${newLines.join("\n")}\n`);
 		// Both changes appear. Line numbers are zero-padded to the max line width (2 for 30 lines).
 		expect(result.diff).toContain("- 3 o2");
 		expect(result.diff).toContain("+ 3 CHANGED-2");
@@ -120,8 +120,8 @@ describe("generateDiffString", () => {
 		const oldLines = Array.from({ length: 40 }, (_, i) => `x${i}`);
 		const newLines = oldLines.slice();
 		newLines[20] = "Y";
-		const small = generateDiffString(oldLines.join("\n") + "\n", newLines.join("\n") + "\n", 1);
-		const large = generateDiffString(oldLines.join("\n") + "\n", newLines.join("\n") + "\n", 6);
+		const small = generateDiffString(`${oldLines.join("\n")}\n`, `${newLines.join("\n")}\n`, 1);
+		const large = generateDiffString(`${oldLines.join("\n")}\n`, `${newLines.join("\n")}\n`, 6);
 		expect(small.diff).toContain("+21 Y");
 		expect(large.diff).toContain("+21 Y");
 	});

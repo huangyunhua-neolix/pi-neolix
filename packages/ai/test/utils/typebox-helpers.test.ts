@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { Value } from "typebox/value";
+import { describe, expect, it } from "vitest";
 import { StringEnum } from "../../src/utils/typebox-helpers.ts";
 
 describe("StringEnum", () => {
@@ -9,12 +9,7 @@ describe("StringEnum", () => {
 		expect(schema.type).toBe("string");
 		expect(schema.enum).toEqual(["add", "subtract", "multiply", "divide"]);
 		// The schema object is JSON-serializable (no functions / symbols).
-		expect(JSON.parse(JSON.stringify(schema)).enum).toEqual([
-			"add",
-			"subtract",
-			"multiply",
-			"divide",
-		]);
+		expect(JSON.parse(JSON.stringify(schema)).enum).toEqual(["add", "subtract", "multiply", "divide"]);
 	});
 
 	it("accepts optional description and default fields", () => {

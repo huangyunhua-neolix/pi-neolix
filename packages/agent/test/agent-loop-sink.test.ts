@@ -99,7 +99,11 @@ describe("runAgentLoop with AgentEventSink", () => {
 		const streamFn = () => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
-				stream.push({ type: "done", reason: "stop", message: createAssistantMessage([{ type: "text", text: "Hi!" }]) });
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "Hi!" }]),
+				});
 			});
 			return stream;
 		};
@@ -136,7 +140,11 @@ describe("runAgentLoop with AgentEventSink", () => {
 		const streamFn = () => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
-				stream.push({ type: "done", reason: "stop", message: createAssistantMessage([{ type: "text", text: "ok" }]) });
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "ok" }]),
+				});
 			});
 			return stream;
 		};
@@ -192,7 +200,11 @@ describe("runAgentLoop with AgentEventSink", () => {
 		const streamFn = () => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
-				stream.push({ type: "done", reason: "stop", message: createAssistantMessage([{ type: "text", text: "x" }]) });
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "x" }]),
+				});
 			});
 			return stream;
 		};
@@ -234,7 +246,11 @@ describe("runAgentLoopContinue with AgentEventSink", () => {
 		const streamFn = () => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
-				stream.push({ type: "done", reason: "stop", message: createAssistantMessage([{ type: "text", text: "Response" }]) });
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "Response" }]),
+				});
 			});
 			return stream;
 		};

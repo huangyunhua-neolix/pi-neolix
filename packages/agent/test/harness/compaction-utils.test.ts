@@ -1,14 +1,13 @@
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import type { AgentMessage } from "../../src/types.ts";
 import {
-	type FileOperations,
 	computeFileLists,
 	createFileOps,
 	extractFileOpsFromMessage,
 	formatFileOperations,
 	serializeConversation,
 } from "../../src/harness/compaction/utils.ts";
+import type { AgentMessage } from "../../src/types.ts";
 
 function createMockUsage(): AssistantMessage["usage"] {
 	return {
@@ -21,7 +20,9 @@ function createMockUsage(): AssistantMessage["usage"] {
 	};
 }
 
-function createAssistantWithToolCalls(toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>): AssistantMessage {
+function createAssistantWithToolCalls(
+	toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>,
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: toolCalls.map((tc, index) => ({
@@ -251,7 +252,7 @@ describe("serializeConversation", () => {
 			timestamp: Date.now(),
 		} as unknown as Message;
 		const result = serializeConversation([message]);
-		expect(result).toContain("[Assistant tool calls]: read(path=\"a.ts\")");
+		expect(result).toContain('[Assistant tool calls]: read(path="a.ts")');
 	});
 
 	it("serializes tool result text content with truncation", () => {

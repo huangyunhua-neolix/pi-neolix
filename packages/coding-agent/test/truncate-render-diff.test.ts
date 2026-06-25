@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { renderDiff, type RenderDiffOptions } from "../src/modes/interactive/components/diff.ts";
+import { type RenderDiffOptions, renderDiff } from "../src/modes/interactive/components/diff.ts";
 import {
 	truncateToVisualLines,
 	type VisualTruncateResult,
 } from "../src/modes/interactive/components/visual-truncate.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 beforeAll(() => {

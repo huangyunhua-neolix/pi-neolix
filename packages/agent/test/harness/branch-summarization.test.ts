@@ -11,20 +11,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
 	type BranchPreparation,
 	type BranchSummaryDetails,
-	collectEntriesForBranchSummary,
 	type CollectEntriesResult,
-	generateBranchSummary,
+	collectEntriesForBranchSummary,
 	type GenerateBranchSummaryOptions,
+	generateBranchSummary,
 	prepareBranchEntries,
 } from "../../src/harness/compaction/branch-summarization.ts";
 import { InMemorySessionStorage } from "../../src/harness/session/memory-storage.ts";
 import { toSession } from "../../src/harness/session/repo-utils.ts";
-import type {
-	BranchSummaryEntry,
-	CompactionEntry,
-	MessageEntry,
-	SessionTreeEntry,
-} from "../../src/harness/types.ts";
+import type { BranchSummaryEntry, CompactionEntry, MessageEntry, SessionTreeEntry } from "../../src/harness/types.ts";
 import { getOrThrow } from "../../src/harness/types.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
@@ -107,7 +102,11 @@ function createBranchSummaryEntry(
 	};
 }
 
-function createCompactionEntry(summary: string, firstKeptEntryId: string, parentId: string | null = null): CompactionEntry {
+function createCompactionEntry(
+	summary: string,
+	firstKeptEntryId: string,
+	parentId: string | null = null,
+): CompactionEntry {
 	return {
 		type: "compaction",
 		id: createId(),

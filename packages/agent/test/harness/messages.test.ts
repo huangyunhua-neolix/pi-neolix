@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
 	BRANCH_SUMMARY_PREFIX,
 	BRANCH_SUMMARY_SUFFIX,
+	bashExecutionToText,
 	COMPACTION_SUMMARY_PREFIX,
 	COMPACTION_SUMMARY_SUFFIX,
-	bashExecutionToText,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
