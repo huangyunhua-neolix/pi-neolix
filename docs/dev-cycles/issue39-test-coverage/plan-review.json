@@ -1,0 +1,97 @@
+{
+  "safe_auto_applied": 2,
+  "completed": true,
+  "reviewers_run": [
+    "coherence",
+    "feasibility",
+    "scope-guardian"
+  ],
+  "findings": [
+    {
+      "reviewer": "coherence",
+      "title": "Plan cites origin acceptance examples AE1-AE5 that do not exist in origin doc",
+      "severity": "P1",
+      "section": "Requirements",
+      "why_it_matters": "Plan line 'Origin acceptance examples: AE1 (covers R1)... AE5 (covers R7)' references AE-IDs the origin requirements doc never defines (no Acceptance Examples section). Implementers/reviewers cannot trace which acceptance example proves each R-ID, so 'done' for each requirement is ambiguous. The AE mapping was invented at plan time, not carried from origin.",
+      "fix": "Remove the 'Origin acceptance examples' line from the plan (the origin has no AE-IDs), or back-fill an Acceptance Examples section in the origin requirements doc first. Removing is simpler and matches the origin's actual shape.",
+      "autofix_class": "manual",
+      "applied": false
+    },
+    {
+      "reviewer": "scope-guardian",
+      "title": "U3 silently drops 2 of 4 origin-required tui paths (throttle, resize)",
+      "severity": "P1",
+      "section": "U3. tui",
+      "why_it_matters": "Origin success criterion for tui lists ink render, keybinding conflicts, state-update throttle, terminal resize. U3's file list + test scenarios cover keybindings/keys/focusable/components/image-parsers but omit throttle and resize entirely, with no deferral. Shipping as-planned leaves R2 partially unmet and the origin's tui criterion open without tracking.",
+      "fix": "Add test files + scenarios for state-update throttle and terminal resize to U3, OR explicitly defer them to 'Deferred to Follow-Up Work' with a rationale (e.g. no testable throttle/resize surface in current tui src) so the gap is tracked rather than silently dropped.",
+      "autofix_class": "manual",
+      "applied": false
+    },
+    {
+      "reviewer": "scope-guardian",
+      "title": "U1 streamProxy test needs fetch mocking; plan omits it",
+      "severity": "P1",
+      "section": "U1. agent",
+      "why_it_matters": "Plan says 'construct a proxy over a mock stream, assert it forwards events' but streamProxy internally calls fetch() to ${options.proxyUrl}/api/stream — it is NOT a wrapper over an injected stream. Without mocking fetch the test makes a real HTTP request and fails in CI, or trivially passes by catching the network error before asserting event propagation. No existing agent test mocks fetch.",
+      "fix": "In U1's streamProxy approach, specify fetch mocking (vi.stubGlobal('fetch', ...) returning a mock ReadableStream of SSE-formatted proxy events), OR restrict the proxy test to pure helpers (buildProxyRequestOptions, processProxyEvent) that need no network, and defer the full streamProxy integration test.",
+      "autofix_class": "manual",
+      "applied": false
+    },
+    {
+      "reviewer": "scope-guardian",
+      "title": "U5 routes pure migrateSessionEntries through faux harness unnecessarily",
+      "severity": "P2",
+      "section": "U5. coding-agent",
+      "why_it_matters": "migrateSessionEntries is a pure function (FileEntry[] in-place mutate, no session/storage/provider). Plan places its test under test/suite/regressions/39-session-version-migration.test.ts with test/suite/harness.ts + SessionManager.inMemory() — over-engineered. Worse, packages/coding-agent/test/session-manager/migration.test.ts already covers it. A second harness-based file duplicates coverage and adds faux-provider deps for nothing.",
+      "fix": "Remove test/suite/regressions/39-session-version-migration.test.ts from U5's file list; add any extra edge cases to the existing test/session-manager/migration.test.ts as plain vitest tests. Keep CURRENT_SESSION_VERSION as a plain-vitest constant assertion outside test/suite/.",
+      "autofix_class": "manual",
+      "applied": false
+    },
+    {
+      "reviewer": "scope-guardian",
+      "title": "U6 coverage gate underspecified — risks silent R1 mis-measurement",
+      "severity": "P2",
+      "section": "U6. Verification",
+      "why_it_matters": "Default packages/agent/vitest.config.ts has no coverage block; vitest.harness.config.ts restricts include to harness-only. A bare 'npx vitest --run --coverage' measures only files imported by tests (all=false default), so uncovered exports are invisible and the >60% gate can false-pass. Plan defers this to 'implementation-time detail' but the gap is large enough to invalidate R1.",
+      "fix": "In U6, pin the coverage mechanism: either extend packages/agent/vitest.config.ts with coverage: { provider: 'v8', all: true, include: ['src/**/*.ts'], exclude: ['src/**/*.d.ts'] } (test-infra config, non-production) OR pass --coverage.all --coverage.include='src/**/*.ts' at invocation. Must happen before U6 can validate R1. Corroborated by feasibility residual risk.",
+      "autofix_class": "manual",
+      "applied": false
+    },
+    {
+      "reviewer": "scope-guardian",
+      "title": "Plan referenced non-existent DEFAULT_*_KEYBINDINGS; corrected to TUI_KEYBINDINGS",
+      "severity": "P2",
+      "section": "U3. tui / Institutional Learnings",
+      "why_it_matters": "Institutional Learnings note said assert against DEFAULT_*_KEYBINDINGS maps, but those constants do not exist in packages/tui/src/keybindings.ts — only TUI_KEYBINDINGS is exported. U3 approach already used TUI_KEYBINDINGS, so the contradiction would confuse implementers searching for non-existent constants.",
+      "fix": "Correct the Institutional Learnings reference to TUI_KEYBINDINGS (the actual exported constant).",
+      "autofix_class": "safe_auto",
+      "applied": true
+    },
+    {
+      "reviewer": "scope-guardian",
+      "title": "U2 dependency on U1 is nominal (createTempDir already exists)",
+      "severity": "P3",
+      "section": "U2. agent",
+      "why_it_matters": "U2 declared Dependencies: U1 (shared createTempDir discipline) but createTempDir already exists in packages/agent/test/harness/session-test-utils.ts and predates this plan. U2 can run in parallel with U1; the false dependency inflates sequencing cost.",
+      "fix": "Change U2 Dependencies to None; note it uses the existing createTempDir from session-test-utils.ts.",
+      "autofix_class": "safe_auto",
+      "applied": true
+    }
+  ],
+  "residual_risks": [
+    "coherence: If the origin requirements doc is later updated with AE-IDs, plan's removed AE line may need re-adding; track origin doc edits.",
+    "coherence: Plan's R2 detail (keybinding getter/setter round-trip, predicates, focusable, CancellableLoader/SettingsList render, image parsers) is more specific than origin's 'key interaction paths have tests' — a scope carve-out not explicitly called out in origin.",
+    "feasibility: U6 'npx vitest --run --coverage' uses npx rather than the 'node ../../node_modules/vitest/dist/cli.js' invocation the plan's own learning recommends for per-file runs; cosmetically inconsistent but functionally fine (npx resolves local vitest 4.1.9; agent's e2e.test.ts uses faux provider with no env-gating so no real e2e-activation trap for agent specifically).",
+    "feasibility: generateBranchSummary is async and calls the model; plan defers the faux-summarizer-stream question to implementation. compaction.test.ts already shows the fauxProvider+createFauxModel injection pattern to mirror, so resolvable at implementation time.",
+    "scope-guardian: Origin lists 'Agent loop interrupt/resume', 'Tool-call failure retry', 'Context-window exhaustion', 'Subagent switching' as explicit agent scope. U1/U2 target pure utility/harness exports and do not explicitly address these named scenarios; some may already be covered by agent.test.ts (abort signal) or absent from src (subagent switching). Plan does not document this analysis — ambiguity whether intentionally deferred or presumed covered by the >60% numeric gate.",
+    "scope-guardian: Plan creates 14+ new test files across 4 packages; without coverage.all=true the >60% gate may false-pass (see U6 finding)."
+  ],
+  "deferred_questions": [
+    "coherence: Should the origin requirements doc be updated to include an Acceptance Examples (AE) section, or is the plan's AE reference a pattern mismatch to resolve by removing the line?",
+    "feasibility: Should packages/agent/vitest.config.ts be extended with a coverage block (test-infra config change) as part of this PR, or coverage measured via CLI flags only? Affects whether R1 can be reliably validated.",
+    "feasibility: Does the agent export-coverage denominator (src/**) include e2e.test.ts-exercised paths or only harness-scoped paths? The >60% threshold's meaning depends on the include glob chosen in U6.",
+    "scope-guardian: Do 'state-update throttle' and 'terminal resize' tui paths correspond to testable API surfaces in current tui src? If not, origin requirements should be updated to reflect what is testable.",
+    "scope-guardian: Are 'Agent loop interrupt/resume', 'Tool-call failure retry', 'Context-window exhaustion' already covered by agent.test.ts, or are they coverage gaps the plan implicitly closed via the >60% numeric gate rather than named scenarios?"
+  ],
+  "verdict": "Plan is feasible and well-grounded (feasibility 0 findings, all claims verified against codebase). 2 safe_auto fixes applied. 4 manual findings (2 P1, 2 P2) + 1 P1 coherence finding remain for implementer/reviewer attention before/during execution — most material: U3 dropped tui paths, U1 streamProxy fetch mock, U6 coverage gate mechanism, and the invented AE-IDs line."
+}
