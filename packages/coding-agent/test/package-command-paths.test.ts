@@ -2,6 +2,16 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// FEAT-004: IS_FORK_BUILD is a compile-time constant (true in this fork) that
+// short-circuits `pi update --self` (the fork ships via freecode-web
+// autoupdate, never upstream npm). The self-update tests below exercise the
+// upstream code path, so mock config to report a non-fork build for them.
+vi.mock("../src/config.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/config.ts")>();
+	return { ...actual, IS_FORK_BUILD: false };
+});
+
 import { ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { main } from "../src/main.ts";

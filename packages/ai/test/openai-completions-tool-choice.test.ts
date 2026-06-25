@@ -1243,7 +1243,10 @@ describe("openai-completions tool_choice", () => {
 		).result();
 
 		const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
-		expect(params.thinking).toEqual({ type: "enabled" });
+		// opencode-go/kimi-k2.6 routes through anthropic-messages, which emits
+		// budget_tokens/display alongside type:"enabled"; the test's intent is
+		// only to assert thinking is enabled, so match on the discriminating field.
+		expect(params.thinking).toMatchObject({ type: "enabled" });
 		expect(params.reasoning_effort).toBeUndefined();
 	});
 
@@ -1296,7 +1299,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "grok-build-0.1")!] as const;
+		const cases = [getModel("opencode", "grok-build-0.1")!] as const;
 
 		for (const model of cases) {
 			let payload: unknown;

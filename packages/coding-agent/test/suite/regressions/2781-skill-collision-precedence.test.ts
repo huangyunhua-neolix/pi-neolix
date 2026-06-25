@@ -104,7 +104,7 @@ describe("issue #2781 skill collision precedence: user skills should override pa
 		expect(webFetch!.description).toBe("Project web-fetch override");
 	});
 
-	it("collision diagnostics should report package skill as loser when user skill wins", async () => {
+	it("silently dedups same-named skills without collision diagnostics", async () => {
 		const pkgDir = createPackageWithSkill("web-fetch", "Package web-fetch skill");
 		createUserSkill("web-fetch", "User web-fetch override");
 		createSettingsWithPackage(pkgDir, "user");
@@ -112,9 +112,12 @@ describe("issue #2781 skill collision precedence: user skills should override pa
 		const loader = new DefaultResourceLoader({ cwd, agentDir });
 		await loader.reload();
 
-		const { diagnostics } = loader.getSkills();
-		const collision = diagnostics.find((d) => d.type === "collision" && d.collision?.name === "web-fetch");
-		expect(collision).toBeDefined();
-		expect(collision!.collision!.loserPath).toContain("fake-package");
+		// FEAT-003 followup: legit skills are mirrored across paths (e.g. Claude
+		// Code plugin cache mirrors user skills), so same-name collisions are
+		// deduped silently — first-loaded wins, no "collision" diagnostic emitted.
+		const { diagnostics, skills } = loader.getSkills();
+		const collisions = diagnostics.filter((d) => d.type === "collision");
+		expect(collisions).toHaveLength(0);
+		expect(skills.filter((s) => s.name === "web-fetch")).toHaveLength(1);
 	});
 });
