@@ -1,8 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { type SettingItem, SettingsList, type SettingsListTheme } from "../../src/components/settings-list.ts";
-import { TUI } from "../../src/tui.ts";
-import { VirtualTerminal } from "../virtual-terminal.ts";
+import { type SettingItem, SettingsList, type SettingsListTheme } from "../src/components/settings-list.ts";
+import { TUI } from "../src/tui.ts";
+import { VirtualTerminal } from "./virtual-terminal.ts";
 
 const theme: SettingsListTheme = {
 	label: (text, _selected) => text,

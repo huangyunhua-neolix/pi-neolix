@@ -1,8 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { CancellableLoader } from "../../src/components/cancellable-loader.ts";
-import { TUI } from "../../src/tui.ts";
-import { VirtualTerminal } from "../virtual-terminal.ts";
+import { CancellableLoader } from "../src/components/cancellable-loader.ts";
+import { TUI } from "../src/tui.ts";
+import { VirtualTerminal } from "./virtual-terminal.ts";
 
 function identity(text: string): string {
 	return text;
