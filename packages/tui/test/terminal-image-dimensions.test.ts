@@ -261,16 +261,22 @@ describe("allocateImageId", () => {
 	});
 
 	it("returns potentially different ids across calls (random)", () => {
-		// Probabilistic: allocateImageId draws from a 32-bit range. With only 50
-		// draws, a birthday-paradox collision is astronomically unlikely
-		// (~50² / (2·2³²) ≈ 3e-7) but not strictly impossible. The assertion
-		// only requires at least two distinct ids (`size > 1`), which holds as
-		// long as not every draw coincidentally lands on the same value.
-		const ids = new Set<number>();
-		for (let i = 0; i < 50; i++) {
-			ids.add(allocateImageId());
+		// Drive Math.random deterministically so the assertion is not
+		// probabilistic. allocateImageId uses Math.random, so an incrementing
+		// sequence guarantees distinct ids without relying on a 32-bit
+		// birthday-paradox argument.
+		const originalRandom = Math.random;
+		let counter = 0;
+		Math.random = () => (counter++ % 100) / 100;
+		try {
+			const ids = new Set<number>();
+			for (let i = 0; i < 50; i++) {
+				ids.add(allocateImageId());
+			}
+			assert.ok(ids.size > 1, "allocateImageId should produce varied ids across calls");
+		} finally {
+			Math.random = originalRandom;
 		}
-		assert.ok(ids.size > 1, "allocateImageId should produce varied ids across calls");
 	});
 
 	it("never returns zero", () => {

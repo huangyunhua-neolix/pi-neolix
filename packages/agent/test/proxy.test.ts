@@ -207,6 +207,12 @@ describe("streamProxy", () => {
 		const { events, result } = await collectStreamEvents(stream);
 
 		expect(events.map((e) => e.type)).toEqual(["error"]);
+		// The error event carries the partial AssistantMessage on its `error` field.
+		const errorEvent = events[0];
+		if (errorEvent?.type === "error") {
+			expect(errorEvent.error.stopReason).toBe("error");
+			expect(errorEvent.error.errorMessage).toContain("upstream down");
+		}
 		expect(result.stopReason).toBe("error");
 		// Verify the proxy surfaces the upstream error: check the stable prefix
 		// and that the upstream body is included, without coupling to the exact
