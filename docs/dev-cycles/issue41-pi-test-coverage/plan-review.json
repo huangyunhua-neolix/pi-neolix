@@ -1,0 +1,122 @@
+{
+  "safe_auto_applied": 1,
+  "completed": true,
+  "findings": [
+    {
+      "reviewer": "ce-coherence-reviewer",
+      "severity": "P2",
+      "finding_type": "error",
+      "title": "Scope Boundaries section has conflicting deferred vs. out-of-scope categories",
+      "section": "Scope Boundaries",
+      "why_it_matters": "Both sections list 'Adding new providers' creating ambiguity about whether permanently excluded or deferred",
+      "fix": "Merge into clearer categories: permanently excluded (铁律) vs deferred (future phase)",
+      "autofix_class": "gated_auto",
+      "confidence": 75
+    },
+    {
+      "reviewer": "ce-feasibility-reviewer",
+      "severity": "P0",
+      "finding_type": "error",
+      "title": "U3 proposes creating repo-utils.test.ts which already exists (187 lines)",
+      "section": "U3 / Problem Frame",
+      "why_it_matters": "Implementer would overwrite 187 lines of existing passing tests. Gap analysis 'zero direct tests' is factually wrong.",
+      "fix": "Drop U3 entirely or reframe as extending existing repo-utils.test.ts with missing scenarios",
+      "autofix_class": "manual",
+      "confidence": 100
+    },
+    {
+      "reviewer": "ce-feasibility-reviewer",
+      "severity": "P1",
+      "finding_type": "error",
+      "title": "U1/U2 propose new files but repo.test.ts already covers repo CRUD (68 lines)",
+      "section": "U1 / U2",
+      "why_it_matters": "Creates separate files fragmenting coverage. Should extend existing repo.test.ts.",
+      "fix": "Reframe U1/U2 as extensions to repo.test.ts; add missing error paths",
+      "autofix_class": "manual",
+      "confidence": 100
+    },
+    {
+      "reviewer": "ce-feasibility-reviewer",
+      "severity": "P1",
+      "finding_type": "omission",
+      "title": "U4 round-trip claim ignores existing storage.test.ts (299 lines)",
+      "section": "U4 / Problem Frame",
+      "why_it_matters": "U4's premise that no round-trip tests exist is wrong. Must acknowledge and scope to gaps only.",
+      "fix": "Acknowledge storage.test.ts; scope U4 to backward-compat fixtures + branching round-trip only",
+      "autofix_class": "manual",
+      "confidence": 100
+    },
+    {
+      "reviewer": "ce-feasibility-reviewer",
+      "severity": "P2",
+      "finding_type": "error",
+      "title": "Provider gap count overstates untested providers (85 test files, not 4)",
+      "section": "Problem Frame / U6 / U7",
+      "why_it_matters": "Gap analysis understates existing coverage. Risks re-testing already-covered behavior.",
+      "fix": "Re-scan packages/ai/test/; map existing tests to providers; scope to genuinely untested providers",
+      "autofix_class": "manual",
+      "confidence": 75
+    },
+    {
+      "reviewer": "ce-security-lens-reviewer",
+      "severity": "P1",
+      "finding_type": "omission",
+      "title": "Env var injection for API keys in tests lacks guard against real-credential leakage",
+      "section": "U6 / U7",
+      "why_it_matters": "On dev machine or CI with ambient credentials, auth path may succeed against real creds. If fetch incompletely mocked, real outbound call possible.",
+      "fix": "Add beforeEach/afterEach that saves and clears all auth env vars before each test. Document in mock-fetch helper contract.",
+      "autofix_class": "gated_auto",
+      "confidence": 75
+    },
+    {
+      "reviewer": "ce-security-lens-reviewer",
+      "severity": "P2",
+      "finding_type": "omission",
+      "title": "Backward-compat inline JSONL fixtures offer no guidance on sanitizing real-looking session content",
+      "section": "KTD3 / U4",
+      "why_it_matters": "Inline fixtures copied from real sessions could contain PII or credential-shaped strings",
+      "fix": "Add note that all fixture strings must be fully synthetic",
+      "autofix_class": "manual",
+      "confidence": 50
+    },
+    {
+      "reviewer": "ce-scope-guardian-reviewer",
+      "severity": "P1",
+      "finding_type": "omission",
+      "title": "Model list loading tests absent from U5/U6/U7 despite explicit origin requirement",
+      "section": "U5 / U6 / U7",
+      "why_it_matters": "Origin explicitly required model list loading tests as P1 must-have. No unit delivers it.",
+      "fix": "Add model-list-loading test scenario to provider units for providers with .models.ts",
+      "autofix_class": "manual",
+      "confidence": 100
+    },
+    {
+      "reviewer": "ce-scope-guardian-reviewer",
+      "severity": "P1",
+      "finding_type": "error",
+      "title": "U7 creates 4 separate test files where parametrized pattern suffices",
+      "section": "U7",
+      "why_it_matters": "special-providers.test.ts adds second parametrized file with no technical distinction from U6",
+      "fix": "Merge special-providers.test.ts into U6's parametrized suite. Keep bedrock/vertex/copilot separate.",
+      "autofix_class": "gated_auto",
+      "confidence": 75
+    },
+    {
+      "reviewer": "ce-scope-guardian-reviewer",
+      "severity": "P2",
+      "finding_type": "omission",
+      "title": "U4 dependency on U1 mock-fs declared but approach text permits real temp dirs",
+      "section": "U4",
+      "why_it_matters": "Dependency declaration misleading if U4 uses real temp dirs",
+      "fix": "Commit to mock-fs for backward-compat fixtures (avoids redundancy with storage.test.ts)",
+      "autofix_class": "safe_auto",
+      "confidence": 75,
+      "applied": true
+    }
+  ],
+  "residual_risks": [
+    "Plan's gap analysis was factually wrong for session layer (5 existing test files, not 2) and AI providers (85 test files, not 4). Plan must be revised before implementation.",
+    "Existing tests may be behavioral/compat, not fetch-level mock tests — the gap may still exist but is smaller than stated"
+  ],
+  "verdict": "P0: plan proposes creating existing file. Major gap-analysis errors. Plan must be revised before implementation."
+}
