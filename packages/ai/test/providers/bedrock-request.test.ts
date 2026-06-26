@@ -12,7 +12,7 @@ describe("bedrock provider request construction", () => {
 	afterEach(() => vi.restoreAllMocks());
 
 	it("attempts request or errors without credentials (error handling works)", async () => {
-		const { restore } = mockFetch();
+		const { captured, restore } = mockFetch();
 		const models = Object.values(AMAZON_BEDROCK_MODELS);
 		const testModel = models[0]!;
 		// Bedrock uses AWS SDK which may need credentials before calling fetch
@@ -30,6 +30,10 @@ describe("bedrock provider request construction", () => {
 			completed = true; // Error is a valid outcome — proves error handling works
 		}
 		expect(completed).toBe(true);
+		// If fetch was called, verify the URL targets AWS Bedrock
+		if (captured.url) {
+			expect(captured.url.toString()).toContain("amazonaws.com");
+		}
 		restore();
 	});
 

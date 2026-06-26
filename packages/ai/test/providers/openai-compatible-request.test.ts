@@ -1,12 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAICompletions } from "../../src/api/openai-completions.ts";
+import { ANT_LING_MODELS } from "../../src/providers/ant-ling.models.ts";
 import { CEREBRAS_MODELS } from "../../src/providers/cerebras.models.ts";
 import { DEEPSEEK_MODELS } from "../../src/providers/deepseek.models.ts";
 import { FIREWORKS_MODELS } from "../../src/providers/fireworks.models.ts";
 import { GROQ_MODELS } from "../../src/providers/groq.models.ts";
+import { MOONSHOTAI_MODELS } from "../../src/providers/moonshotai.models.ts";
+import { MOONSHOTAI_CN_MODELS } from "../../src/providers/moonshotai-cn.models.ts";
 import { OPENROUTER_MODELS } from "../../src/providers/openrouter.models.ts";
 import { TOGETHER_MODELS } from "../../src/providers/together.models.ts";
 import { XAI_MODELS } from "../../src/providers/xai.models.ts";
+import { XIAOMI_MODELS } from "../../src/providers/xiaomi.models.ts";
+import { XIAOMI_TOKEN_PLAN_AMS_MODELS } from "../../src/providers/xiaomi-token-plan-ams.models.ts";
+import { XIAOMI_TOKEN_PLAN_CN_MODELS } from "../../src/providers/xiaomi-token-plan-cn.models.ts";
+import { XIAOMI_TOKEN_PLAN_SGP_MODELS } from "../../src/providers/xiaomi-token-plan-sgp.models.ts";
+import { ZAI_MODELS } from "../../src/providers/zai.models.ts";
+import { ZAI_CODING_CN_MODELS } from "../../src/providers/zai-coding-cn.models.ts";
 import { getHeader, mockFetch } from "../helpers/mock-fetch.ts";
 
 const context = {
@@ -34,6 +43,40 @@ const providers: ProviderConfig[] = [
 		expectedUrlPart: "openrouter.ai",
 		apiKeyEnvVar: "OPENROUTER_API_KEY",
 	},
+	{ id: "moonshotai", models: MOONSHOTAI_MODELS, expectedUrlPart: "moonshot.ai", apiKeyEnvVar: "MOONSHOT_API_KEY" },
+	{
+		id: "moonshotai-cn",
+		models: MOONSHOTAI_CN_MODELS,
+		expectedUrlPart: "moonshot.cn",
+		apiKeyEnvVar: "MOONSHOT_API_KEY",
+	},
+	{ id: "xiaomi", models: XIAOMI_MODELS, expectedUrlPart: "xiaomimimo.com", apiKeyEnvVar: "XIAOMI_API_KEY" },
+	{
+		id: "xiaomi-token-plan-cn",
+		models: XIAOMI_TOKEN_PLAN_CN_MODELS,
+		expectedUrlPart: "token-plan-cn.xiaomimimo.com",
+		apiKeyEnvVar: "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+	},
+	{
+		id: "xiaomi-token-plan-sgp",
+		models: XIAOMI_TOKEN_PLAN_SGP_MODELS,
+		expectedUrlPart: "token-plan-sgp.xiaomimimo.com",
+		apiKeyEnvVar: "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+	},
+	{
+		id: "xiaomi-token-plan-ams",
+		models: XIAOMI_TOKEN_PLAN_AMS_MODELS,
+		expectedUrlPart: "token-plan-ams.xiaomimimo.com",
+		apiKeyEnvVar: "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+	},
+	{ id: "zai", models: ZAI_MODELS, expectedUrlPart: "z.ai", apiKeyEnvVar: "ZAI_API_KEY" },
+	{
+		id: "zai-coding-cn",
+		models: ZAI_CODING_CN_MODELS,
+		expectedUrlPart: "bigmodel.cn",
+		apiKeyEnvVar: "ZAI_CODING_CN_API_KEY",
+	},
+	{ id: "ant-ling", models: ANT_LING_MODELS, expectedUrlPart: "ant-ling.com", apiKeyEnvVar: "ANT_LING_API_KEY" },
 ];
 
 describe.each(providers)("openai-compatible provider: $id", ({ id, models, expectedUrlPart }) => {
