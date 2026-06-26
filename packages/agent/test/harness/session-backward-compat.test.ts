@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { JsonlSessionStorage, loadJsonlSessionMetadata } from "../../src/harness/session/jsonl-storage.ts";
+import { Session } from "../../src/harness/session/session.ts";
 import { SessionError } from "../../src/harness/types.ts";
 import { MockFileSystem } from "./mock-fs.ts";
+import { createAssistantMessage, createUserMessage } from "./session-test-utils.ts";
 
 const SESSIONS_DIR = "/sessions";
 const SESSION_FILE = "/sessions/test-session.jsonl";
@@ -119,5 +121,50 @@ describe("Session backward-compat", () => {
 		expect(entries[0]!.id).toBe("msg-1");
 		const metadata = await reopened.getMetadata();
 		expect(metadata.id).toBe("rt-001");
+	});
+
+	it("round-trips a branching session tree through write then read", async () => {
+		const fs = new MockFileSystem();
+		fs.injectDir(SESSIONS_DIR);
+		const storage = await JsonlSessionStorage.create(fs, "/sessions/branch-session.jsonl", {
+			cwd: "/tmp/branch",
+			sessionId: "branch-001",
+		});
+		const session = new Session(storage);
+
+		// Build initial branch: user → assistant → user
+		const user1 = await session.appendMessage(createUserMessage("first question"));
+		const assistant1 = await session.appendMessage(createAssistantMessage("first answer"));
+		await session.appendMessage(createUserMessage("follow-up"));
+
+		// Branch: move leaf back to user1, append a different branch
+		await session.moveTo(user1);
+		const assistant2 = await session.appendMessage(createAssistantMessage("alternative answer"));
+		await session.appendMessage(createUserMessage("alt follow-up"));
+
+		// Re-open and verify tree structure
+		const reopened = await JsonlSessionStorage.open(fs, "/sessions/branch-session.jsonl");
+		const entries = await reopened.getEntries();
+		expect(entries.length).toBeGreaterThanOrEqual(5);
+
+		// Verify all entry ids are preserved
+		const ids = entries.map((e) => e.id);
+		expect(ids).toContain(user1);
+		expect(ids).toContain(assistant1);
+		expect(ids).toContain(assistant2);
+
+		// Verify the leaf points to the last entry on the alternate branch
+		const leafId = await reopened.getLeafId();
+		expect(leafId).not.toBeNull();
+
+		// Verify parent chains: assistant2's parent should be user1 (branch point)
+		const assistant2Entry = entries.find((e) => e.id === assistant2);
+		expect(assistant2Entry).toBeDefined();
+		expect(assistant2Entry!.parentId).toBe(user1);
+
+		// Verify metadata survived round-trip
+		const metadata = await reopened.getMetadata();
+		expect(metadata.id).toBe("branch-001");
+		expect(metadata.cwd).toBe("/tmp/branch");
 	});
 });
