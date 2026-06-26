@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { JsonlSessionRepo } from "../../src/harness/session/jsonl-repo.ts";
 import { InMemorySessionRepo } from "../../src/harness/session/memory-repo.ts";
+import { SessionError } from "../../src/harness/types.ts";
+import { MockFileSystem } from "./mock-fs.ts";
 import { createAssistantMessage, createTempDir, createUserMessage } from "./session-test-utils.ts";
 
 describe("InMemorySessionRepo", () => {
@@ -64,5 +66,96 @@ describe("JsonlSessionRepo", () => {
 		await repo.delete(sourceMetadata);
 		expect(existsSync(sourceMetadata.path)).toBe(false);
 		await expect(repo.open(sourceMetadata)).rejects.toThrow("Session not found");
+	});
+
+	it("returns empty list when sessions root does not exist", async () => {
+		const fs = new MockFileSystem();
+		const repo = new JsonlSessionRepo({ fs, sessionsRoot: "/sessions" });
+		const result = await repo.list();
+		expect(result).toEqual([]);
+	});
+
+	it("skips invalid JSONL files during list and propagates other errors", async () => {
+		const fs = new MockFileSystem();
+		fs.injectDir("/sessions");
+		fs.injectDir("/sessions/--tmp-test--");
+		const validHeader = JSON.stringify({
+			type: "session",
+			version: 3,
+			id: "valid-1",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			cwd: "/tmp/test",
+		});
+		fs.injectFile("/sessions/--tmp-test--/2026-01-01_valid-1.jsonl", `${validHeader}\n`);
+		fs.injectFile("/sessions/--tmp-test--/broken.jsonl", "not valid json\n");
+		const repo = new JsonlSessionRepo({ fs, sessionsRoot: "/sessions" });
+		const result = await repo.list({ cwd: "/tmp/test" });
+		expect(result.map((m) => m.id)).toEqual(["valid-1"]);
+	});
+
+	it("sorts sessions by createdAt descending", async () => {
+		const fs = new MockFileSystem();
+		fs.injectDir("/sessions");
+		fs.injectDir("/sessions/--tmp-proj--");
+		const header1 = JSON.stringify({
+			type: "session",
+			version: 3,
+			id: "older",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			cwd: "/tmp/proj",
+		});
+		const header2 = JSON.stringify({
+			type: "session",
+			version: 3,
+			id: "newer",
+			timestamp: "2026-06-01T00:00:00.000Z",
+			cwd: "/tmp/proj",
+		});
+		fs.injectFile("/sessions/--tmp-proj--/2026-01-01_older.jsonl", `${header1}\n`);
+		fs.injectFile("/sessions/--tmp-proj--/2026-06-01_newer.jsonl", `${header2}\n`);
+		const repo = new JsonlSessionRepo({ fs, sessionsRoot: "/sessions" });
+		const result = await repo.list({ cwd: "/tmp/proj" });
+		expect(result.map((m) => m.id)).toEqual(["newer", "older"]);
+	});
+
+	it("throws SessionError not_found when opening a non-existent session", async () => {
+		const fs = new MockFileSystem();
+		const repo = new JsonlSessionRepo({ fs, sessionsRoot: "/sessions" });
+		await expect(
+			repo.open({
+				id: "missing",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				cwd: "/tmp",
+				path: "/sessions/missing.jsonl",
+			}),
+		).rejects.toThrow(SessionError);
+	});
+
+	it("throws SessionError storage when createDir fails", async () => {
+		const fs = new MockFileSystem({ failCreateDir: true });
+		const repo = new JsonlSessionRepo({ fs, sessionsRoot: "/sessions" });
+		let error: unknown;
+		try {
+			await repo.create({ cwd: "/tmp/test", id: "test-1" });
+		} catch (e) {
+			error = e;
+		}
+		expect(error).toBeInstanceOf(SessionError);
+		expect((error as SessionError).code).toBe("storage");
+	});
+});
+
+describe("InMemorySessionRepo — error paths", () => {
+	it("throws SessionError not_found when opening unknown id", async () => {
+		const repo = new InMemorySessionRepo();
+		await expect(repo.open({ id: "nonexistent", createdAt: "2026-01-01T00:00:00.000Z" })).rejects.toThrow(
+			SessionError,
+		);
+	});
+
+	it("delete on non-existent session is a no-op", async () => {
+		const repo = new InMemorySessionRepo();
+		await expect(repo.delete({ id: "nonexistent", createdAt: "2026-01-01T00:00:00.000Z" })).resolves.toBeUndefined();
+		expect((await repo.list()).length).toBe(0);
 	});
 });
